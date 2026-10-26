@@ -1,0 +1,8 @@
+# Dark theme to match the Studio charts (Glassnode-style design language).
+[theme]
+base = "dark"
+primaryColor = "#f7931a"
+backgroundColor = "#141414"
+secondaryBackgroundColor = "#242424"
+textColor = "#f7f8fa"
+font = "sans serif"

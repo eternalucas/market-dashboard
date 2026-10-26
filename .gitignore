@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# Local data (the database, caches, fetched files): rebuilt by "Update all data"
+data/
+
+# Your settings with API keys. config.example.yaml (no keys) is the public template.
+config.yaml

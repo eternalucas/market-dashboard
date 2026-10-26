@@ -1,0 +1,113 @@
+# Market dashboard settings. Edit this file to change what gets tracked.
+# Nothing here is secret except the API key section at the bottom.
+
+assets: [BTC, ETH, SOL, HYPE, DOGE, SUI, XRP, ENA]
+
+social_risk:
+  # How far back each series is compared against when scoring it (days).
+  lookback_days: 730
+  # A series needs at least this many days of history before it gets a score.
+  min_history_days: 180
+
+  # The tracked inputs are built in (src/sources/social.py): 11 English and 24
+  # other-language Wikipedia articles, 7 Google Trends terms, crypto apps in the
+  # US/CA/UK App Store, 11 YouTube channels, Hacker News and GDELT news.
+  # Anything listed below is ADDED to those defaults.
+  wikipedia:
+    # Extra English Wikipedia article titles (use underscores for spaces).
+    articles: []
+
+  google_trends:
+    terms: []
+    geo: ""          # "" = worldwide, "CA" = Canada, "US" = United States
+
+  app_store:
+    country: ca      # added to the default countries (us, ca, gb)
+    # Names as they appear in the App Store (prefix match, ignores case).
+    # Only crypto apps are scored; others are recorded for reference.
+    apps: []
+
+  youtube:
+    # Handles (@name) or channel IDs (UC...).
+    handles:
+      - UCRvqjQPSeaWn-uEx-w0XOIg   # Benjamin Cowen (Into The Cryptoverse)
+      - "@CoinBureau"
+      - "@CryptoBanterGroup"
+      - "@InvestAnswers"
+      - "@GrahamStephan"
+      - "@MeetKevin"
+      - "@AndreiJikh"
+
+  # Optional overrides of the built-in weights (see src/indicators/social_risk.py), e.g.
+  # component_weights: {fear_greed: 0.5, hacker_news: 0.25}
+  # group_weights: {attention: 0.65, speculation: 0.35}
+
+  # Score bands used for labels and chart shading.
+  bands:
+    low: 0.30
+    elevated: 0.70
+    extreme: 0.85
+
+positioning:
+  # Perp exchanges, tried in this order. One failing doesn't stop the others.
+  perp_exchanges: [bybit, okx, binance, hyperliquid]
+  # Spot order books used for depth and imbalance, first one that works wins.
+  spot_books: [coinbase, kraken, bybit]
+  # Distance from mid price used for depth buckets (percent).
+  depth_bands_pct: [0.5, 1.0, 2.0]
+  # Options skew target, in days to expiry.
+  skew_target_days: 30
+
+coinalyze:
+  # Exchanges aggregated in the flow charts (names as Coinalyze lists them).
+  # (OKX spot isn't on Coinalyze; Bitfinex is.)
+  spot_exchanges: [Coinbase, Binance, Bybit, Bitfinex]
+  perp_exchanges: [Binance, Bybit, OKX, Hyperliquid]
+
+events:
+  # Assets whose reaction to each macro event is measured (name: Yahoo ticker).
+  assets:
+    BTC: BTC-USD
+    ETH: ETH-USD
+    SOL: SOL-USD
+    S&P 500: "^GSPC"
+    Nasdaq 100: "^NDX"
+    US dollar (DXY): DX-Y.NYB
+    Gold: GC=F
+    US 10y yield: "^TNX"
+  bp_assets: [US 10y yield]      # measured as a change in basis points, not %
+  horizons_days: [1, 3, 7, 14, 28]
+
+trade_review:
+  # Leave blank to pick a trader automatically from the Hyperliquid
+  # leaderboard using the rule below; paste an address to pin one.
+  address: ""
+  min_account_usd: 10000
+  max_account_usd: 100000
+  min_trades_month_volume_usd: 250000   # active this month
+  seed: 7                               # change to draw a different trader
+  # Top 100 leaderboard (Trade review > Top 100). All adjustable in the UI too.
+  eligibility:
+    min_trips: 50                 # round trips over the available history
+    min_active_days: 10
+    max_fills_per_day: 2000       # above this (median per active day) = market maker
+    max_maker_share: 0.80         # ...or this maker share together with a short median hold
+    min_median_hold_min: 1.0
+    max_two_sided_share: 0.30     # ...or this share of fills quoted on both sides within 1 s
+    single_trade_flag: 0.50       # flag when one trade is more than this share of PnL
+
+onchain:
+  hl_cohort_sample: 15     # accounts sampled per size cohort for positioning
+  cohort_coins: [BTC, ETH, SOL, HYPE]
+
+display:
+  timezone: America/Toronto   # chart times are shown in this time zone
+
+api_keys:
+  # Free key from console.cloud.google.com (YouTube Data API v3).
+  # Leave blank to skip YouTube.
+  youtube: ""
+  # Free key from coinalyze.net (Account > API). Needed for the Flows tab.
+  coinalyze: ""
+  # Free key from fredaccount.stlouisfed.org (the same one used for the FRED connector).
+  fred: ""

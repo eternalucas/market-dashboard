@@ -1,0 +1,41 @@
+//@version=6
+// Coinbase Premium: Coinbase's USD spot price vs Binance's USDT spot price, in %.
+// Persistently negative = US spot buyers are the weaker side; positive = US demand is leading.
+// Alerts: premium flips sign, or becomes unusually large vs its recent history (z-score).
+indicator("Coinbase Premium", shorttitle = "CB Premium", overlay = false, precision = 3)
+
+symCB  = input.symbol("COINBASE:BTCUSD", "Coinbase spot (USD)")
+symBN  = input.symbol("BINANCE:BTCUSDT", "Binance spot (USDT)")
+smooth = input.int(1, "Smoothing (bars)", minval = 1)
+zLen   = input.int(200, "Z-score lookback (bars)", minval = 20)
+zAlert = input.float(2.0, "Alert when |z| exceeds", minval = 0.5, step = 0.1)
+
+cb = request.security(symCB, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+bn = request.security(symBN, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+
+premium = ta.sma((cb / bn - 1) * 100, smooth)
+mean    = ta.sma(premium, zLen)
+sd      = ta.stdev(premium, zLen)
+z       = sd > 0 ? (premium - mean) / sd : 0.0
+
+plot(premium, "Premium (%)", style = plot.style_columns, color = premium >= 0 ? color.new(color.teal, 0) : color.new(color.orange, 0))
+plot(mean, "Average", color = color.new(color.gray, 0), linewidth = 1)
+hline(0, "Zero", color = color.new(color.gray, 50))
+
+turnedPositive = ta.crossover(premium, 0)
+turnedNegative = ta.crossunder(premium, 0)
+unusuallyHigh  = ta.crossover(z, zAlert)
+unusuallyLow   = ta.crossunder(z, -zAlert)
+
+alertcondition(turnedPositive, "Premium turned positive", "Coinbase premium turned positive on {{ticker}} ({{interval}})")
+alertcondition(turnedNegative, "Premium turned negative", "Coinbase premium turned negative on {{ticker}} ({{interval}})")
+alertcondition(unusuallyHigh, "Premium unusually high", "Coinbase premium unusually high vs recent history on {{ticker}} ({{interval}})")
+alertcondition(unusuallyLow, "Premium unusually low", "Coinbase premium unusually low vs recent history on {{ticker}} ({{interval}})")
+
+// Small read-out in the corner: current premium and how unusual it is.
+var table box = table.new(position.top_right, 2, 2, bgcolor = color.new(color.black, 80))
+if barstate.islast
+    table.cell(box, 0, 0, "Premium", text_color = color.white)
+    table.cell(box, 1, 0, str.tostring(premium, "#.###") + "%", text_color = premium >= 0 ? color.teal : color.orange)
+    table.cell(box, 0, 1, "Z-score", text_color = color.white)
+    table.cell(box, 1, 1, str.tostring(z, "#.##"), text_color = color.white)
