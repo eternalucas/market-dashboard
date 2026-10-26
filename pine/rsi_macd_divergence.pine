@@ -1,0 +1,82 @@
+//@version=6
+// RSI + MACD Divergence: flags regular divergences between price and momentum.
+//   Bullish: price makes a lower low, RSI makes a higher low (and, optionally, the
+//            MACD histogram also makes a higher low).
+//   Bearish: price makes a higher high, RSI makes a lower high (MACD optional).
+// A divergence is only confirmed once the pivot is complete, i.e. `Pivot right`
+// bars after the swing, so signals never repaint. A higher-timeframe RSI line gives
+// context (e.g. a bullish divergence while the 4h RSI is below 50).
+indicator("RSI + MACD Divergence", shorttitle = "Div RSI/MACD", overlay = false, max_lines_count = 200)
+
+rsiLen   = input.int(14, "RSI length", minval = 2)
+fastLen  = input.int(12, "MACD fast", minval = 1)
+slowLen  = input.int(26, "MACD slow", minval = 2)
+sigLen   = input.int(9, "MACD signal", minval = 1)
+pivL     = input.int(5, "Pivot left (bars)", minval = 1)
+pivR     = input.int(5, "Pivot right (confirmation bars)", minval = 1)
+maxGap   = input.int(60, "Max bars between the two pivots", minval = 5)
+needMacd = input.bool(true, "Require the MACD histogram to confirm")
+htf      = input.timeframe("240", "Higher-timeframe RSI")
+
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, hist] = ta.macd(close, fastLen, slowLen, sigLen)
+// [1] with lookahead_on reads the last COMPLETED higher-timeframe bar: no repainting.
+htfRsi = request.security(syminfo.tickerid, htf, ta.rsi(close, rsiLen)[1], lookahead = barmerge.lookahead_on)
+
+pl = ta.pivotlow(rsi, pivL, pivR)
+ph = ta.pivothigh(rsi, pivL, pivR)
+
+// Previous confirmed pivots
+var float prevLowRsi  = na
+var float prevLowPx   = na
+var float prevLowHist = na
+var int   prevLowBar  = na
+var float prevHighRsi  = na
+var float prevHighPx   = na
+var float prevHighHist = na
+var int   prevHighBar  = na
+
+bullDiv = false
+bearDiv = false
+
+if not na(pl)
+    curBar  = bar_index - pivR
+    curPx   = low[pivR]
+    curHist = hist[pivR]
+    if not na(prevLowBar) and curBar - prevLowBar <= maxGap
+        macdOk = not needMacd or curHist > prevLowHist
+        bullDiv := curPx < prevLowPx and pl > prevLowRsi and macdOk
+        if bullDiv
+            line.new(prevLowBar, prevLowRsi, curBar, pl, color = color.teal, width = 2)
+    prevLowRsi  := pl
+    prevLowPx   := curPx
+    prevLowHist := curHist
+    prevLowBar  := curBar
+
+if not na(ph)
+    curBar  = bar_index - pivR
+    curPx   = high[pivR]
+    curHist = hist[pivR]
+    if not na(prevHighBar) and curBar - prevHighBar <= maxGap
+        macdOk = not needMacd or curHist < prevHighHist
+        bearDiv := curPx > prevHighPx and ph < prevHighRsi and macdOk
+        if bearDiv
+            line.new(prevHighBar, prevHighRsi, curBar, ph, color = color.orange, width = 2)
+    prevHighRsi  := ph
+    prevHighPx   := curPx
+    prevHighHist := curHist
+    prevHighBar  := curBar
+
+plot(rsi, "RSI", color = color.new(color.blue, 0), linewidth = 2)
+plot(htfRsi, "Higher-timeframe RSI", color = color.new(color.gray, 30), linewidth = 1)
+hline(70, "Overbought", color = color.new(color.gray, 50))
+hline(50, "Midline", color = color.new(color.gray, 70), linestyle = hline.style_dotted)
+hline(30, "Oversold", color = color.new(color.gray, 50))
+
+plotshape(bullDiv ? pl : na, "Bullish divergence", style = shape.labelup, location = location.absolute,
+     color = color.teal, text = "Bull", textcolor = color.white, size = size.tiny, offset = -pivR)
+plotshape(bearDiv ? ph : na, "Bearish divergence", style = shape.labeldown, location = location.absolute,
+     color = color.orange, text = "Bear", textcolor = color.white, size = size.tiny, offset = -pivR)
+
+alertcondition(bullDiv, "Bullish divergence", "Bullish RSI/MACD divergence confirmed on {{ticker}} ({{interval}})")
+alertcondition(bearDiv, "Bearish divergence", "Bearish RSI/MACD divergence confirmed on {{ticker}} ({{interval}})")

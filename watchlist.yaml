@@ -1,0 +1,824 @@
+# Wallet watchlist: publicly labelled wallets tracked by the On-chain tab.
+#
+# Sources (all public): Etherscan name tags and Arkham entity pages for
+# exchange and market-maker wallets, checked one by one; the bitinfocharts top-100 rich list for Bitcoin wallets holding
+# 10,000+ BTC (balances as of October 2026). Every Bitcoin address passes a
+# checksum check (src/addresses.py), so a mistyped address fails loudly.
+#
+# Unlabelled whales are anonymous: the label is their rich-list rank, nothing
+# more. Add your own rows (e.g. addresses you see labelled on Arkham) in the
+# same format; 'category' drives the cohort grouping.
+wallets:
+- chain: eth
+  address: '0xf8191D98ae98d2f7aBDFB63A9b0b812b93C873AA'
+  entity: Wintermute
+  label: Wintermute 4
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x0000006daea1723962647b7e189d311d757Fb793'
+  entity: Wintermute
+  label: Wintermute 1
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x000002Cba8DfB0a86A47a415592835E17fac080a'
+  entity: Wintermute
+  label: Wintermute 2
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x5cddEbd8a7b3BC60156550187BF5465b1c3290f5'
+  entity: Wintermute
+  label: Wintermute 3
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xCe84449A8Ebec019AC110a4b6662E55d0fD9f228'
+  entity: Wintermute
+  label: Wintermute 5
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xDBF5E9c5206d0dB70a90108bf936DA60221dC080'
+  entity: Wintermute
+  label: Wintermute (0xdbf...080)
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xf584F8728B874a6a5c7A8d4d387C9aae9172D621'
+  entity: Jump Trading
+  label: Jump Trading
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x9507c04B10486547584C37bCBd931B2a4FeE9A41'
+  entity: Jump Trading
+  label: Jump Trading 2
+  category: market_maker
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xf89d7b9c864f589bbF53a82105107622B35EaA40'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet'
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xee5B5B923fFcE93A870B3104b7CA09c3db80047A'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet 4'
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x1Db92e2EeBC8E0c075a02BeA49a2935BcD2dFCF4'
+  entity: Bybit
+  label: 'Bybit: Cold Wallet 1 (drained in Feb 2025 hack)'
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xBE0eB53F46cd790Cd13851d5EFf43D12404d33E8'
+  entity: Binance
+  label: Binance 7
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xF977814e90dA44bFA03b6295A0616a897441aceC'
+  entity: Binance
+  label: 'Binance: Hot Wallet 20'
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x28C6c06298d514Db089934071355E5743bf21d60'
+  entity: Binance
+  label: Binance 14
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549'
+  entity: Binance
+  label: Binance 15
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0xDFd5293D8e347dFe59E90eFd55b2956a1343963d'
+  entity: Binance
+  label: Binance 16
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: eth
+  address: '0x5a52E96BAcdaBb82fd05763E25335261B270Efcb'
+  entity: Binance
+  label: Binance 28
+  category: exchange
+  source: Etherscan public name tag (checked Oct 2026)
+- chain: btc
+  address: 34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 248598
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3M219KR5vEneNb47ewrPfWyb5jQ2DjxRP6
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 177342
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1ql49ydapnjafl5t2cp9zqpjwe6pdgmxy98859v2
+  entity: Robinhood
+  label: Robinhood-coldwallet
+  category: exchange
+  balance_at_listing: 140850
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97
+  entity: Bitfinex
+  label: Bitfinex-coldwallet
+  category: exchange
+  balance_at_listing: 130010
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qjasf9z3h7w3jspkhtgatgpyvvzgpa2wwd2lr0eh5tx44reyn2k7sfc27a4
+  entity: Tether
+  label: Tether
+  category: issuer_treasury
+  balance_at_listing: 96932
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qazcm763858nkj2dj986etajv6wquslv8uxwczt
+  entity: Bitfinex hack recovery
+  label: Bitfinex-Hack-Recovery
+  category: hack_or_recovery
+  balance_at_listing: 94643
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qd4ysezhmypwty5dnw7c8nqy5h5nxg0xqsvaefd0qn5kq32vwnwqqgv4rzr
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #7)'
+  category: whale
+  balance_at_listing: 91850
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF
+  entity: Mt. Gox hack
+  label: MtGox-Hack
+  category: hack_or_recovery
+  balance_at_listing: 79957
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q8yj0herd4r4yxszw3nkfvt53433thk0f5qst4g
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #9)'
+  category: whale
+  balance_at_listing: 78317
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1Ay8vMC7R1UbyCCZRVULMV7iQpHSAbguJP
+  entity: Mr.100
+  label: Mr.100
+  category: whale
+  balance_at_listing: 75299
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qa5wkgaew2dkv56kfvj49j0av5nml45x9ek9hz6
+  entity: US Government
+  label: SilkRoad-FBI-Confiscated
+  category: government
+  balance_at_listing: 69370
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3LYJfcfHPXYJreMsASk2jkn69LWEYKzexb
+  entity: Binance
+  label: Binance-BTCB-Reserve
+  category: exchange
+  balance_at_listing: 68200
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q0ymzksy046tv4z88ts5nmu7s574umnwmdev3rt
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #13)'
+  category: whale
+  balance_at_listing: 64658
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3MgEAFWu1HKSnZ5ZsC8qf61ZW18xrP5pgd
+  entity: OKX
+  label: OKEx
+  category: exchange
+  balance_at_listing: 55805
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1LdRcdxfbSnmCYYNdeYpUnztiYzVfBEQeC
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #15)'
+  category: whale
+  balance_at_listing: 53880
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1AC4fMwgY8j9onSbXEWeH6Zan8QGMSdmtA
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #16)'
+  category: whale
+  balance_at_listing: 51830
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1LruNZjwamWJXThX2Y8C2d47QqhAkkc5os
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #17)'
+  category: whale
+  balance_at_listing: 44000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q4j7fcl8zx5yl56j00nkqez9zf3f6ggqchwzzcs5hjxwqhsgxvavq3qfgpr
+  entity: Coincheck
+  label: Coincheck
+  category: exchange
+  balance_at_listing: 42441
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q0j55cut9nd2c88tnnsfultdx696c8lt6n4n0su
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #19)'
+  category: whale
+  balance_at_listing: 41269
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qy3uw2kk45uj9vsy52rjfhydm2tnd6hreu8vha3
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #20)'
+  category: whale
+  balance_at_listing: 39484
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qws342rlkhszh58rtn35zrw7w076puz83gkcufy
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #21)'
+  category: whale
+  balance_at_listing: 39195
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qa2eu6p5rl9255e3xz7fcgm6snn4wl5kdfh7zpt05qp5fad9dmsys0qjg0e
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #22)'
+  category: whale
+  balance_at_listing: 38194
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3LQUu4v9z6KNch71j7kbj8GPeAGUo1FW6a
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 37927
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1EoGpcfUVYtLqptk2C8y31brTGfow3PJFM
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #24)'
+  category: whale
+  balance_at_listing: 36877
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q7ydrtdn8z62xhslqyqtyt38mm4e2c4h3mxjkug
+  entity: UK Government
+  label: UK-Gov-Confiscated
+  category: government
+  balance_at_listing: 36000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qeh5e4ndkrs9sxw8wed2yce69tkrg7t003rz4vk5jhkaf6knkem4q944qvt
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #26)'
+  category: whale
+  balance_at_listing: 33405
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qukw69mjxwp30adfqddv6gcyva26laxz562rhlk
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #27)'
+  category: whale
+  balance_at_listing: 32467
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qx9t2l3pyny2spqpqlye8svce70nppwtaxwdrp4
+  entity: Binance
+  label: Binance-Pool
+  category: exchange
+  balance_at_listing: 31643
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3FHNBLobJnbCTFTVakh5TXmEneyf5PT61B
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 31275
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 12ib7dApVFvg82TXKycWBNpN8kFyiAN1dr
+  entity: '967'
+  label: '967'
+  category: whale
+  balance_at_listing: 31000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q8taf2eca7pn9wu4czt8fgftqm288xtfxdyt33syzxuexxty733xsszghzk
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #31)'
+  category: whale
+  balance_at_listing: 30800
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 12tkqA9xSoowkzoERHMWNKsTey55YEBqkv
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #32)'
+  category: whale
+  balance_at_listing: 28151
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3EMVdMehEq5SFipQ5UfbsfMsH223sSz9A9
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #33)'
+  category: whale
+  balance_at_listing: 26984
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3FsDiWdG76meMpdCLbVV4dUXhrFyaLrtxL
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #34)'
+  category: whale
+  balance_at_listing: 26916
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3JZq4atUahhuA9rLhXLMhhTo133J9rF97j
+  entity: Bitfinex
+  label: Bitfinex-coldwallet
+  category: exchange
+  balance_at_listing: 26884
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q6h2v33qt0jjvpr2hxxtwhtvdvtn086g0n2qu06
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #36)'
+  category: whale
+  balance_at_listing: 26403
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 39eYrpgAgDhp4tTjrSb1ppZ5kdAc1ikBYw
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #37)'
+  category: whale
+  balance_at_listing: 26062
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1N7jWmv63mkMdsYzbNUVHbEYDQfcq1u8Yp
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #38)'
+  category: whale
+  balance_at_listing: 24052
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 15cHRgVrGKz7qp2JL2N5mkB2MCFGLcnHxv
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #39)'
+  category: whale
+  balance_at_listing: 23600
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qr4dl5wa7kl8yu792dceg9z5knl2gkn220lk7a9
+  entity: Crypto.com
+  label: Crypto.com-coldwallet
+  category: exchange
+  balance_at_listing: 22642
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qx2x5cqhymfcnjtg902ky6u5t5htmt7fvqztdsm028hkrvxcl4t2sjtpd9l
+  entity: Bitbank
+  label: Bitbank-coldwallet
+  category: exchange
+  balance_at_listing: 20451
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 17rm2dvb439dZqyMe2d4D6AQJSgg6yeNRn
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #42)'
+  category: whale
+  balance_at_listing: 20008
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #43)'
+  category: whale
+  balance_at_listing: 19414
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1Pzaqw98PeRfyHypfqyEgg5yycJRsENrE7
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 18505
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1PJiGp2yDLvUgqeBsuZVCBADArNsk6XEiw
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 18379
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1p6mv2d3rpfhatkv77r6huuurgqyyklxpsnw3090k2qjwqtd6cwkcqzsruxt
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #46)'
+  category: whale
+  balance_at_listing: 18200
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q72nyp6mzxjxm02j7t85pg0pq24684zdj2wuweu
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #47)'
+  category: whale
+  balance_at_listing: 18160
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qyt5gsrxp553v9fuwk8gugvspefamdphvf4xwup
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #48)'
+  category: whale
+  balance_at_listing: 16350
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 34HpHYiyQwg69gFmCq2BGHjF1DZnZnBeBP
+  entity: Binance
+  label: Binance-coldwallet
+  category: exchange
+  balance_at_listing: 16307
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 38rFtDdFpXc4y6XPbSnNd2UvveEt5Xms2E
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #50)'
+  category: whale
+  balance_at_listing: 16116
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1GR9qNz7zgtaW5HwwVpEJWMnGWhsbsieCG
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #51)'
+  category: whale
+  balance_at_listing: 15746
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qs4z2d3h5je080f74tax92dwg08sf3hylj9vfg3
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #52)'
+  category: whale
+  balance_at_listing: 15528
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 36X44rmLtk218sXACZ3gFpNMFENi6dQ2n3
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #53)'
+  category: whale
+  balance_at_listing: 15132
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1BAuq7Vho2CEkVkUxbfU26LhwQjbCmWQkD
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #54)'
+  category: whale
+  balance_at_listing: 15000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1CNtkWbb4grh8xtb8mhoZ6armNE9PHgzA8
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #55)'
+  category: whale
+  balance_at_listing: 14224
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h
+  entity: Binance
+  label: Binance-wallet
+  category: exchange
+  balance_at_listing: 14179
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 39gUvGynQ7Re3i15G3J2gp9DEB9LnLFPMN
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #57)'
+  category: whale
+  balance_at_listing: 13577
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q8gd5elz2hj82pe7jy8cel543me6mngs8lwnnydludsnlcewesgzqzqpzrl
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #58)'
+  category: whale
+  balance_at_listing: 13343
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3FM9vDYsN2iuMPKWjAcqgyahdwdrUxhbJ3
+  entity: OKX
+  label: OKEx
+  category: exchange
+  balance_at_listing: 13324
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qlt5nm3kflne7rht4alsnzdzad878ld5rcu4na0
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #60)'
+  category: whale
+  balance_at_listing: 13242
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qvrwzs8unvu35kcred2z5ujjef36s5jgf3y6tp8
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #61)'
+  category: whale
+  balance_at_listing: 13108
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1q4vxn43l44h30nkluqfxd9eckf45vr2awz38lwa
+  entity: UK Government
+  label: UK-Gov-Confiscated
+  category: government
+  balance_at_listing: 13003
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1p4zxtwg3rhr5jqkzuvf0q03m2a69clydghqqz6arhldxln7ew0guq840aqm
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #63)'
+  category: whale
+  balance_at_listing: 12900
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3NWndKFmvV6cJ6ENgXVeaDTo3mBfAvr27H
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #64)'
+  category: whale
+  balance_at_listing: 12316
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 3CEPCFAXw1ny5o8uRTWdvpekcJU1tYo6t2
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #65)'
+  category: whale
+  balance_at_listing: 11937
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qwfkngwsl3n2yrnttsmv3q849arwjlxzay34v7e
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #66)'
+  category: whale
+  balance_at_listing: 11765
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 12VuUfQHTGqWDvBzm8TBad1mZBm4hjGEzN
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #67)'
+  category: whale
+  balance_at_listing: 11528
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qvckrfwcppqkkx83nn0j3k5vlc6pa5a65huykdcnhypf6qtjjweus6zdp2s
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #68)'
+  category: whale
+  balance_at_listing: 11500
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qsg6x2cvm75xuddn5g0ss9zglaamgz90q8vcp8w
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #69)'
+  category: whale
+  balance_at_listing: 11261
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1F34duy2eeMz5mSrvFepVzy7Y1rBsnAyWC
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #70)'
+  category: whale
+  balance_at_listing: 10771
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qxlth5har0qasqvattsjvgp80st2x402u5shuud
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #71)'
+  category: whale
+  balance_at_listing: 10500
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qatjx2qc8vxz39m0qdz303z8et2pgmc74xz8km3
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #72)'
+  category: whale
+  balance_at_listing: 10432
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 14FEEMRhaUwMbhf2rA1cFXmS1Zuk9nc9eq
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #73)'
+  category: whale
+  balance_at_listing: 10306
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1Q8QR5k32hexiMQnRgkJ6fmmjn5fMWhdv9
+  entity: Binance
+  label: Binance-Pool
+  category: exchange
+  balance_at_listing: 10217
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: bc1qsxdxm0exqdsmnl9ejrz250xqxrxpxkgf5nhhtq
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #75)'
+  category: whale
+  balance_at_listing: 10002
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1Ki3WTEEqTLPNsN5cGTsMkL2sJ4m5mdCXT
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #76)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1DzsfLRDfbmQM99xm59au2SrTY3YmciBSB
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #77)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1GUfWdZQoo2pQ4BKHsiegxuZPnheY5ueTm
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #78)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 12HnxiXEeKUVjQRbMVTytsGWnzHd5LdGCt
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #79)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 17uULjz9moeLyjXHoKNwDRgKzf8ahY3Jia
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #80)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 18qNs1yBGGKR8RyErnEF5kegbNUgPfixhS
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #81)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1DP3VYwN6ozHXDDaETbvNFLd86CAXfaewi
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #82)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1NhJGUJu8rrTwPS4vopsdTqqcK4nAwdLwJ
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #83)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1MtUMTqtdrpT6Rar5fgWoyrzAevatssej5
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #84)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1MewpRkpcbFdqamPPYc1bXa9AJ189Succy
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #85)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1H2MXWiSniAgg7ykdXEzPHL6oTH1ic4kP
+  entity: Unlabelled whale
+  label: 'Whale (rich-list #86)'
+  category: whale
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 1CY7fykRLWXeSbKB885Kr4KjQxmDdvW923
+  entity: OKX
+  label: OKX
+  category: exchange
+  balance_at_listing: 10000
+  source: bitinfocharts top-100 rich list
+- chain: btc
+  address: 15DomY3arDPw5jD658Mbf3AY3wT3YCDmW2
+  entity: Wintermute
+  label: 'Wintermute: Hot Wallet'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: btc
+  address: bc1q9exg34dkmgxu28yektgn929jpjpzukhhl2r3zr
+  entity: Wintermute
+  label: 'Wintermute: Hot Wallet (bc1q9)'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: btc
+  address: 1KbDEg1tDz2ErYgaDbaDhhawnLrSQFaFx5
+  entity: Wintermute
+  label: 'Wintermute: Binance deposit address'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: btc
+  address: 1KNm4K8GUK8sMoxc2Z3zU8Uv5FDVjrA72p
+  entity: Jump Trading
+  label: Jump Crypto (1KNm4)
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: btc
+  address: 1PeVQnGw7JKhzqBxDE8vKJSFLpjqsBZKeX
+  entity: Jump Trading
+  label: 'Jump Crypto: Binance deposit address'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x51C72848c68a965f66FA7a88855F9f7784502a7F'
+  entity: Wintermute
+  label: 'Wintermute: Market Maker'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x76801132a22801640284Cd67F7DD41fED2926B6a'
+  entity: Wintermute
+  label: Wintermute (0x768)
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x4f1a5a5d258522254933a6DA9648c57Fe230D17e'
+  entity: Jump Trading
+  label: Jump Crypto (0x4f1)
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x056c1eB7c23FEAEFa4CE9187acA960529868fd92'
+  entity: Jump Trading
+  label: 'Jump Crypto: Coinbase deposit address'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0xEd89da9DD83A0D703991ee833969489278B260E7'
+  entity: Jump Trading
+  label: 'Jump Crypto: Binance deposit address'
+  category: market_maker
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x0A7E3e04fB45af4233a27bcf23F2c94F5BabcF39'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0x0A7)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x318d2aAe4C99c2e74F7B5949fa1C34DF837789B8'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0x318)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0x6522B7F9d481eCEB96557F44753a4b893F837E90'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0x652)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0xEF3aeFf9A5F61C6Dda33069c58C1434006e13B20'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0xEF3)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0xa85C29b94F8A22A7268FaceE89ef4EcA051be2ce'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0xa85)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0xf440139a62b2B939699C5b3e09F88E40464Ab9bc'
+  entity: Bybit
+  label: 'Bybit: Hot Wallet (0xf44)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
+- chain: eth
+  address: '0xa180Fe01B906A1bE37BE6c534a3300785b20d947'
+  entity: Binance
+  label: 'Binance: Hot Wallet (0xa18)'
+  category: exchange
+  source: Arkham entity page (checked Oct 2026)
