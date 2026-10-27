@@ -125,3 +125,9 @@ def test_candidates_union_of_windows():
     pool = lbm.candidates(lb, per_window=1)
     assert set(pool["account_id"]) == {"a", "d"}
     assert pool.set_index("account_id").loc["d", "source_windows"] == "allTime,month"
+
+
+def test_candidates_drop_accounts_without_volume():
+    lb = pd.DataFrame({"account_id": list("ab"), "week_pnl": [5, 4], "month_pnl": [5, 4], "allTime_pnl": [5, 4],
+                       "week_vlm": [0, 1e6], "month_vlm": [0, 1e6], "allTime_vlm": [0, 1e6]})
+    assert list(lbm.candidates(lb, per_window=5)["account_id"]) == ["b"]

@@ -8,6 +8,8 @@ SIZE_BUCKETS = [0, 100_000, 1_000_000, 10_000_000, np.inf]
 SIZE_LABELS = ["< $100k", "$100k-1M", "$1M-10M (whale)", "> $10M (mega)"]
 
 HL_BUCKETS = [0, 10_000, 100_000, 1_000_000, 10_000_000, np.inf]
+HL_EMPTIED_BELOW = 100        # $: account emptied/withdrawn; current size says nothing
+HL_BOT_TURNOVER = 100         # monthly volume / account above this = market-maker / HFT-like
 HL_LABELS = ["Shrimp (<$10k)", "Fish ($10k-100k)", "Dolphin ($100k-1M)", "Whale ($1M-10M)", "Leviathan (>$10M)"]
 
 
@@ -55,3 +57,56 @@ def cohort_positioning(positions: pd.DataFrame) -> pd.DataFrame:
     g["long_share"] = g["long_usd"] / (g["long_usd"] + g["short_usd"]).replace(0, np.nan)
     g["accounts"] = p.groupby(["cohort", "coin"], observed=True)["address"].nunique()
     return g.reset_index()
+
+
+# --------------------------------------------------------------------------- #
+# Bitcoin watched-wallet flows over a chosen window
+# --------------------------------------------------------------------------- #
+
+def flow_group(entity: str, label: str) -> str:
+    """Wallets are grouped by entity (all Binance wallets = 'Binance'), except
+    unlabelled rich-list whales, which are separate owners: kept by label."""
+    return label if entity in ("Unlabelled whale", "", None) else entity
+
+
+def btc_moves(tx: pd.DataFrame, wl: pd.DataFrame, daily_px: pd.Series) -> pd.DataFrame:
+    """One row per (transaction, entity). A transaction between two wallets
+    of the same entity nets to ~0 for that entity and is marked internal, so
+    it never counts as a flow. USD uses that day's BTC close."""
+    if tx.empty:
+        return pd.DataFrame()
+    meta = wl.set_index("address")
+    t = tx.copy()
+    t["time"] = pd.to_datetime(t["time"], utc=True, format="ISO8601")
+    t["label"] = t["address"].map(meta["label"])
+    t["category"] = t["address"].map(meta["category"])
+    t["group"] = [flow_group(e, lab) for e, lab in zip(t["address"].map(meta["entity"]), t["label"])]
+    g = t.groupby(["txid", "group"], as_index=False).agg(
+        time=("time", "first"), net_btc=("net_btc", "sum"), gross_btc=("net_btc", lambda x: x.abs().sum()),
+        wallets=("address", "nunique"), category=("category", "first"),
+        label=("label", lambda x: ", ".join(sorted(set(x)))), counterparties=("counterparties", "first"))
+    g["internal"] = (g["wallets"] >= 2) & (g["net_btc"].abs() < 0.01 * g["gross_btc"])
+    px = daily_px.copy()
+    px.index = pd.to_datetime(px.index, utc=True).normalize()
+    px = px[~px.index.duplicated(keep="last")].sort_index()
+    day = g["time"].dt.normalize()
+    g["usd"] = g["net_btc"] * px.reindex(day.unique()).ffill().reindex(day).to_numpy()
+    return g.sort_values("time", ascending=False).reset_index(drop=True)
+
+
+def window_flows(moves: pd.DataFrame, start: pd.Timestamp, coverage: dict[str, str] | None = None,
+                 groups_meta: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per entity over [start, now]: inflow, outflow, net (BTC and USD at each
+    day's close), transactions. 'Coverage' says whether every wallet's
+    history is complete over the whole window."""
+    m = moves[(moves["time"] >= start) & ~moves["internal"]]
+    if m.empty:
+        return pd.DataFrame()
+    out = m.groupby("group").agg(
+        category=("category", "first"),
+        inflow_btc=("net_btc", lambda x: x[x > 0].sum()), outflow_btc=("net_btc", lambda x: x[x < 0].sum()),
+        net_btc=("net_btc", "sum"), net_usd=("usd", "sum"), txs=("txid", "nunique"), last=("time", "max"))
+    if coverage is not None:
+        out["coverage"] = [("complete" if pd.Timestamp(coverage.get(gr, "1970-01-01T00:00:00+00:00")) <= start
+                            else f"complete from {pd.Timestamp(coverage[gr]):%d %b %H:%M}") for gr in out.index]
+    return out.sort_values("net_btc", key=abs, ascending=False)

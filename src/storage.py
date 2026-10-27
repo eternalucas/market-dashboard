@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS futures_curve ( -- dated futures snapshots for term s
     price REAL, idx REAL, oi_usd REAL,
     PRIMARY KEY (venue, instrument, ts)
 );
+CREATE TABLE IF NOT EXISTS liquidations (  -- actual forced closes from the exchanges' public feeds
+    venue TEXT NOT NULL, asset TEXT NOT NULL, ts TEXT NOT NULL,
+    side  TEXT NOT NULL,      -- position that was liquidated: 'long' or 'short'
+    price REAL NOT NULL, qty REAL NOT NULL, usd REAL,
+    PRIMARY KEY (venue, asset, ts, side, price, qty)
+);
+CREATE INDEX IF NOT EXISTS liquidations_ts ON liquidations (asset, ts);
+CREATE TABLE IF NOT EXISTS hl_liq_levels (  -- exact Hyperliquid liquidation levels, one snapshot per scan
+    coin TEXT NOT NULL, ts TEXT NOT NULL, side TEXT NOT NULL, price REAL NOT NULL, usd REAL,
+    PRIMARY KEY (coin, ts, side, price)
+);
 CREATE TABLE IF NOT EXISTS fetch_log (
     ts      TEXT NOT NULL,
     source  TEXT NOT NULL,

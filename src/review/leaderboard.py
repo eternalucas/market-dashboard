@@ -49,7 +49,7 @@ class Eligibility:
 # Candidates
 # --------------------------------------------------------------------------- #
 
-def candidates(lb: pd.DataFrame, per_window: int = 150) -> pd.DataFrame:
+def candidates(lb: pd.DataFrame, per_window: int = 1000) -> pd.DataFrame:
     """Union of the top `per_window` accounts by PnL in each of the venue's
     windows (week, month, allTime). The venue has no 90-day window; 90d is
     computed by us for everyone in the pool."""
@@ -62,17 +62,22 @@ def candidates(lb: pd.DataFrame, per_window: int = 150) -> pd.DataFrame:
             picks.setdefault(a, set()).add(w)
     pool = lb[lb["account_id"].isin(picks)].copy()
     pool["source_windows"] = pool["account_id"].map(lambda a: ",".join(sorted(picks[a])))
+    # No trading volume in any window = the PnL didn't come from trading (vault
+    # deposits, spot holdings): nothing to review, so not worth a fetch.
+    vlm = [c for c in ("week_vlm", "month_vlm", "allTime_vlm") if c in pool]
+    if vlm:
+        pool = pool[pool[vlm].fillna(0).sum(axis=1) > 0]
     return pool
 
 
-def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 150) -> pd.DataFrame:
+def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 1000) -> pd.DataFrame:
     ad = venues.get(venue)
     lb = ad.leaderboard()
     pool = candidates(lb, per_window)
     now = pd.Timestamp.now(tz="UTC").isoformat()
     rows = pd.DataFrame({
         "venue": venue, "account_id": pool["account_id"], "as_of": now, "source_windows": pool["source_windows"],
-        "venue_pnl_json": pool[[c for c in pool.columns if c.endswith("_pnl")]].apply(
+        "venue_pnl_json": pool[[c for c in pool.columns if c.endswith(("_pnl", "_vlm"))]].apply(
             lambda r: json.dumps(r.to_dict()), axis=1),
         "account_value": pool["account_value"]})
     # the pool is replaced, not appended: accounts that left the venue's lists drop off the board
@@ -81,10 +86,11 @@ def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 150) -
     return pool
 
 
-def current_pool(con, venue: str = "hyperliquid", max_age_h: float = 6, per_window: int = 150) -> pd.DataFrame:
+def current_pool(con, venue: str = "hyperliquid", max_age_h: float = 6, per_window: int = 1000) -> pd.DataFrame:
     """The stored pool if it's recent, otherwise a fresh one (the stats file is ~20 MB)."""
     last = con.execute("SELECT MAX(as_of) FROM tr_candidates WHERE venue=?", (venue,)).fetchone()[0]
-    if last and pd.Timestamp.now(tz="UTC") - pd.Timestamp(last) < pd.Timedelta(hours=max_age_h):
+    n = con.execute("SELECT COUNT(*) FROM tr_candidates WHERE venue=?", (venue,)).fetchone()[0]
+    if last and n >= per_window and pd.Timestamp.now(tz="UTC") - pd.Timestamp(last) < pd.Timedelta(hours=max_age_h):
         df = pd.read_sql_query("SELECT * FROM tr_candidates WHERE venue=?", con, params=(venue,))
         pnl = df["venue_pnl_json"].map(json.loads).apply(pd.Series)
         return pd.concat([df, pnl], axis=1)
@@ -408,14 +414,17 @@ def snapshot_boards(con, venue: str = "hyperliquid") -> int:
     return store.upsert(con, "tr_leaderboard_snapshots", pd.DataFrame(rows), ts_cols=("as_of",))
 
 
-def refresh(con, venue: str = "hyperliquid", per_window: int = 150, budget_s: float = 2400,
+def refresh(con, venue: str = "hyperliquid", per_window: int = 1000, budget_s: float = 2400,
             max_age_h: float = 20, say=print, el: Eligibility | None = None) -> dict:
     """One refresh pass: candidates, then accounts not synced for max_age_h,
     most promising first, until the time budget runs out. Safe to stop and
     resume: progress is stored per account."""
     t0 = time.time()
     pool = current_pool(con, venue, per_window=per_window)
-    pool = pool.sort_values("allTime_pnl", ascending=False)
+    # Active traders first: monthly volume relative to account size, so the board fills with
+    # reviewable traders early instead of spending the first hours on buy-and-hold whales.
+    turnover = (pool["month_vlm"] if "month_vlm" in pool else 0) / pool["account_value"].clip(lower=1_000)
+    pool = pool.assign(_t=turnover).sort_values(["_t", "allTime_pnl"], ascending=False)
     done = skipped = 0
     for acct in pool["account_id"]:
         if time.time() - t0 > budget_s:

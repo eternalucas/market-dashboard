@@ -177,6 +177,15 @@ def typical_move(p: pd.Series, h: int, in_bp: bool = False, since: str = "2018-0
     return float(move.mean())
 
 
+def typical_up_share(p: pd.Series, h: int, since: str = "2018-01-01") -> float:
+    """Share of all h-day windows (any start day) in which the asset rose: the
+    baseline for 'how often was it up after the event'."""
+    d = p[p.index >= pd.Timestamp(since)].asfreq("D").ffill()
+    move = d.shift(-(h - 1)) - d.shift(1)
+    move = move.dropna()
+    return float((move > 0).mean()) if len(move) else float("nan")
+
+
 def summarize(rt: pd.DataFrame, typical: dict[tuple[str, int], float], by_label: bool) -> pd.DataFrame:
     """Average move, hit rate and count per event (and label), with the
     excess over the asset's typical move for the same horizon."""

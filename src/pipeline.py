@@ -14,6 +14,7 @@ import time
 
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 import json
@@ -77,6 +78,68 @@ def update_prices(con, cfg):
 # --------------------------------------------------------------------------- #
 
 
+FUNDING_FIX_MARK = "meta:funding_interval_fix"
+
+
+def fix_funding_intervals(con) -> bool:
+    """One-off repair (27 Oct 2026): rates from contracts that pay every 4h were
+    stored as if they were 8h rates. Funding history (stored per payment) is
+    rescaled from the spacing of its payments; the few live snapshots of the
+    4h contracts are doubled and their OI-weighted average recomputed.
+    Runs once; a marker row records that it ran."""
+    if not storage.load_series(con, FUNDING_FIX_MARK).empty:
+        return False
+    for name in storage.series_names(con, "funding_hist_8h:"):
+        if name.split(":")[1] in ("binance", "bybit", "okx"):
+            raw = storage.load_series(con, name)
+            storage.save_series(con, name, derivatives.to_8h(raw))
+    four_hour = {"binance": ["HYPE", "ENA"], "bybit": ["ENA"]}      # intervals checked live on 27 Oct 2026
+    for ex, assets in four_hour.items():
+        for a in assets:
+            s = storage.load_series(con, f"funding_8h:{ex}:{a}")
+            storage.save_series(con, f"funding_8h:{ex}:{a}", s * 2)
+    for a in ("HYPE", "ENA"):
+        fr = pd.DataFrame({ex: storage.load_series(con, f"funding_8h:{ex}:{a}") for ex in SNAPSHOT_EXCHANGES})
+        oi = pd.DataFrame({ex: storage.load_series(con, f"oi_usd:{ex}:{a}") for ex in SNAPSHOT_EXCHANGES})
+        fr, oi = fr.align(oi, join="inner")
+        w = oi.where(fr.notna())
+        storage.save_series(con, f"agg_funding_8h:{a}", ((fr * w).sum(axis=1) / w.sum(axis=1)).dropna())
+    storage.save_point(con, FUNDING_FIX_MARK, 1.0)
+    return True
+
+
+BYBIT_OI_FIX_MARK = "meta:bybit_oi_one_side_fix"
+
+
+def fix_bybit_oi(con, assets) -> bool:
+    """One-off repair (27 Oct 2026): Bybit's openInterest counts both sides, so
+    stored Bybit open interest was double the one-sided figure every other
+    venue reports. Halves it and recomputes the cross-exchange totals and
+    OI-weighted averages at each stored hour."""
+    if not storage.load_series(con, BYBIT_OI_FIX_MARK).empty:
+        return False
+    for prefix in ("oi_usd:bybit:", "oi_coin_hist:bybit:"):
+        for name in storage.series_names(con, prefix):
+            storage.save_series(con, name, storage.load_series(con, name) / 2)
+    for a in assets:
+        oi = pd.DataFrame({ex: storage.load_series(con, f"oi_usd:{ex}:{a}") for ex in SNAPSHOT_EXCHANGES})
+        if oi.empty:
+            continue
+        storage.save_series(con, f"agg_oi_usd:{a}", oi.sum(axis=1, min_count=1).dropna())
+        w = oi.div(oi.sum(axis=1), axis=0)
+        for metric, agg in (("funding_8h", "agg_funding_8h"), ("basis", "agg_basis")):
+            v = pd.DataFrame({ex: storage.load_series(con, f"{metric}:{ex}:{a}") for ex in SNAPSHOT_EXCHANGES})
+            v, ww = v.align(w, join="inner")
+            ww = ww.where(v.notna())
+            storage.save_series(con, f"{agg}:{a}", ((v * ww).sum(axis=1) / ww.sum(axis=1)).dropna())
+    storage.save_point(con, BYBIT_OI_FIX_MARK, 1.0)
+    return True
+
+
+SNAPSHOT_EXCHANGES = ("bybit", "okx", "binance", "hyperliquid")
+DEPTH_BANDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)   # % from mid; config bands are added to these
+
+
 def positioning_snapshot(con, cfg, asset: str) -> dict:
     """Fetch live perps, spot book and options skew for one asset, store the
     readings, and return them for display."""
@@ -106,7 +169,7 @@ def positioning_snapshot(con, cfg, asset: str) -> dict:
     for venue in pcfg["spot_books"]:
         try:
             bids, asks = derivatives.SPOT_BOOKS[venue](asset)
-            meta, depth = pos.book_depth(bids, asks, pcfg["depth_bands_pct"])
+            meta, depth = pos.book_depth(bids, asks, sorted(set(DEPTH_BANDS) | set(pcfg["depth_bands_pct"])))
             out.update(book=(bids, asks), depth=depth, book_meta={**meta, "venue": venue})
             for _, r in depth.iterrows():
                 b = r["band_pct"]
@@ -323,6 +386,59 @@ def _fetch_wallet(w) -> dict:
         return {"w": w, "error": f"{type(e).__name__}: {e}"}
 
 
+BTC_SYNC_STATE = "btc_sync.json"
+
+
+def sync_btc_wallets(con, max_pages: int = 8) -> dict:
+    """Hourly (recorder) and on 'Update all data': every watched Bitcoin
+    wallet's balance, plus all its new confirmed transactions since the last
+    sync (paged until the last stored one). Per wallet, `complete_since` is
+    the time from which the stored history has no holes; flows are only
+    trusted after it (see indicators/onchain.wallet_coverage)."""
+    import json
+    ONCHAIN_DIR.mkdir(parents=True, exist_ok=True)
+    wl = onchain.load_watchlist()
+    wl = wl[wl["valid"] & (wl["chain"] == "btc")]
+    path = ONCHAIN_DIR / "btc_txs.csv"
+    stored = pd.read_csv(path, usecols=["txid", "address", "time"]) if path.exists() else pd.DataFrame(columns=["txid", "address", "time"])
+    known = stored.groupby("address")["txid"].apply(set).to_dict()
+    state_path = ONCHAIN_DIR / BTC_SYNC_STATE
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    now = storage.now_hour()
+    new_rows, n_ok = [], 0
+    for w in wl.itertuples():
+        try:
+            bal = onchain.btc_balance(w.address)
+            rows, complete = onchain.btc_sync(w.address, known.get(w.address, set()), max_pages)
+        except Exception as e:  # noqa: BLE001 - one explorer hiccup never stops the rest
+            storage.log_fetch(con, f"onchain:btc:{w.label}", False, 0, f"{type(e).__name__}: {e}")
+            continue
+        storage.save_point(con, f"onchain_bal:btc:{w.address}", bal, ts=now)
+        st = state.get(w.address, {})
+        prior = stored.loc[stored["address"] == w.address, "time"]
+        oldest_new = rows["time"].min().isoformat() if not rows.empty else now.isoformat()
+        if not complete:
+            st["complete_since"] = oldest_new                  # hole before this batch
+        elif "complete_since" not in st:
+            # first sync under this method: rows stored earlier came from snapshots of the
+            # newest 25 transactions and can have holes, so trust only from the newest of them
+            st["complete_since"] = (pd.to_datetime(prior, utc=True, format="ISO8601").max().isoformat()
+                                    if len(prior) else "1970-01-01T00:00:00+00:00")
+        if not rows.empty:
+            rows["address"] = w.address
+            rows["counterparties"] = rows["counterparties"].map(lambda c: " ".join(c))
+            new_rows.append(rows)
+        st["last_sync"], st["balance"] = now.isoformat(), bal
+        state[w.address] = st
+        storage.log_fetch(con, f"onchain:btc:{w.label}", True, len(rows))
+        n_ok += 1
+    if new_rows:
+        _append_csv(path, pd.concat(new_rows, ignore_index=True), ["txid", "address"])
+    state_path.write_text(json.dumps(state, indent=1, default=str))
+    storage.log_fetch(con, "onchain:btc_sync", True, n_ok)
+    return {"wallets": n_ok, "new_txs": int(sum(len(r) for r in new_rows))}
+
+
 def update_onchain(con, cfg):
     """Balances and recent transfers for every watched wallet. Wallets are
     fetched a few at a time per explorer (the BTC and ETH explorers are
@@ -336,7 +452,8 @@ def update_onchain(con, cfg):
         storage.log_fetch(con, "watchlist", False, 0, f"{len(bad)} addresses fail the checksum: "
                           + ", ".join(bad["address"].head(5)))
     today = attention.today_utc()
-    todo = [w for w in wl[wl["valid"]].itertuples() if w.chain in ("btc", "eth")]
+    sync_btc_wallets(con)                            # Bitcoin: balances + every new transaction
+    todo = [w for w in wl[wl["valid"]].itertuples() if w.chain == "eth"]
     btc_txs, eth_txs = [], []
     with ThreadPoolExecutor(max_workers=3) as btc_pool, ThreadPoolExecutor(max_workers=3) as eth_pool:
         futures = [(btc_pool if w.chain == "btc" else eth_pool).submit(_fetch_wallet, w) for w in todo]
@@ -365,13 +482,19 @@ def update_hl_cohorts(con, cfg):
     def step():
         ONCHAIN_DIR.mkdir(parents=True, exist_ok=True)
         lb = hyperliquid.leaderboard()
-        lb = lb[lb["month_vlm"] > 0].copy()           # active accounts only
+        lb = lb[lb["month_vlm"] > 0].copy()           # active this month
         lb["cohort"] = oc.hl_size_cohort(lb["account_value"])
+        lb.loc[lb["account_value"] < oc.HL_EMPTIED_BELOW, "cohort"] = np.nan   # emptied: size unknown
         lb["turnover"] = oc.hl_turnover_cohort(lb["month_vlm"], lb["account_value"])
-        lb[["address", "account_value", "month_vlm", "month_pnl", "allTime_pnl", "cohort", "turnover"]].to_csv(
-            ONCHAIN_DIR / "hl_leaderboard.csv", index=False)
+        lb["turnover_x"] = lb["month_vlm"] / lb["account_value"].replace(0, np.nan)
+        lb[["address", "account_value", "month_vlm", "month_pnl", "allTime_pnl", "cohort", "turnover",
+            "turnover_x"]].to_csv(ONCHAIN_DIR / "hl_leaderboard.csv", index=False)
         n = cfg["onchain"]["hl_cohort_sample"]
-        sample = lb.sort_values("month_vlm", ascending=False).groupby("cohort", observed=True).head(n)
+        # Positioning sample: the largest accounts in each cohort, leaving out
+        # bot-like turnover (> 100x the account a month: market makers, HFT),
+        # whose inventory says nothing about how traders lean.
+        pool = lb[lb["cohort"].notna() & (lb["turnover_x"] <= oc.HL_BOT_TURNOVER)]
+        sample = pool.sort_values("account_value", ascending=False).groupby("cohort", observed=True).head(n)
         rows = []
         for a in sample.itertuples():
             try:
@@ -380,7 +503,7 @@ def update_hl_cohorts(con, cfg):
                 continue
             for p in pos.itertuples():
                 rows.append({"cohort": a.cohort, "address": a.address, "coin": p.coin,
-                             "size": p.size, "value_usd": p.value_usd})
+                             "size": p.size, "value_usd": p.value_usd, "rule": "largest_non_bot"})
             time.sleep(0.2)
         positions = pd.DataFrame(rows)
         positions.to_csv(ONCHAIN_DIR / "hl_cohort_positions.csv", index=False)

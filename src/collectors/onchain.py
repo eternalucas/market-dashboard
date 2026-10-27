@@ -73,6 +73,45 @@ def btc_transfers(address: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _parse_btc_tx(tx: dict, address: str) -> dict:
+    ins = [v.get("prevout") or {} for v in tx["vin"]]
+    sent = sum(p.get("value", 0) for p in ins if p.get("scriptpubkey_address") == address)
+    recv = sum(o.get("value", 0) for o in tx["vout"] if o.get("scriptpubkey_address") == address)
+    senders = {p.get("scriptpubkey_address") for p in ins} - {address, None}
+    receivers = {o.get("scriptpubkey_address") for o in tx["vout"]} - {address, None}
+    return {"txid": tx["txid"], "time": pd.to_datetime(tx["status"]["block_time"], unit="s", utc=True),
+            "net_btc": (recv - sent) / 1e8, "counterparties": sorted(senders if recv > sent else receivers)}
+
+
+def btc_sync(address: str, known: set[str], max_pages: int = 8) -> tuple[pd.DataFrame, bool]:
+    """Confirmed transactions newer than the ones already stored, newest
+    first, 25 per page (mempool.space's page size), until a known txid or
+    the start of the address's history is reached.
+
+    Returns (rows, complete): complete=False means the wallet made more
+    transactions since the last sync than max_pages covers, so there is a
+    hole between the oldest row returned and the newest stored one."""
+    rows, last, complete = [], None, False
+    for _ in range(max_pages):
+        page = _btc_get(f"/address/{address}/txs/chain" + (f"/{last}" if last else ""))
+        time.sleep(PAUSE)
+        if not page:
+            complete = True                    # reached the address's first transaction
+            break
+        hit = False
+        for tx in page:
+            if tx["txid"] in known:
+                hit = True
+                break
+            if tx.get("status", {}).get("confirmed"):
+                rows.append(_parse_btc_tx(tx, address))
+        if hit or len(page) < 25:
+            complete = True
+            break
+        last = page[-1]["txid"]
+    return pd.DataFrame(rows, columns=["txid", "time", "net_btc", "counterparties"]), complete
+
+
 # --------------------------------------------------------------------------- #
 # Ethereum
 # --------------------------------------------------------------------------- #

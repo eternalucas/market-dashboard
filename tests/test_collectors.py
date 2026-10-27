@@ -39,9 +39,11 @@ def test_google_trends_csv(tmp_path):
 
 def test_bybit_snapshot(monkeypatch):
     monkeypatch.setattr(derivatives, "get_json", fake({"tickers": {"result": {"list": [
-        {"markPrice": "100000", "indexPrice": "99950", "fundingRate": "0.0001", "openInterestValue": "5000000000"}]}}}))
+        {"markPrice": "100000", "indexPrice": "99950", "fundingRate": "0.0001", "openInterestValue": "5000000000",
+         "singleOpenInterestValue": "2500000000"}]}}}))
     s = derivatives.bybit_snapshot("BTC")
-    assert s["funding_8h"] == 0.0001 and s["oi_usd"] == 5e9 and s["exchange"] == "bybit"
+    # Bybit's openInterestValue counts both sides; the one-sided value is used, like every other venue
+    assert s["funding_8h"] == 0.0001 and s["oi_usd"] == 2.5e9 and s["exchange"] == "bybit"
 
 
 def test_hyperliquid_hourly_funding_scaled_to_8h(monkeypatch):

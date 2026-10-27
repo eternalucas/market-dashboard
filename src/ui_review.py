@@ -32,9 +32,8 @@ def money(x, dp=0):
 
 
 def chart_layout(fig, height=420):
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
-    return fig
+    from .charts import fixed_layout
+    return fixed_layout(fig, height)
 
 
 @st.cache_resource
@@ -86,8 +85,8 @@ def render_board(rcon, cfg) -> None:
                "by behaviour; every filter is adjustable below.")
     stt = lbm.status(rcon, "hyperliquid")
     kinds = stt["accounts_by_kind"]
-    c = st.columns([1.2, 1, 1, 1, 1.3])
-    c[0].metric("Candidates", f"{stt['pool'] or 0:,}", help="Top 150 by PnL in each of Hyperliquid's week, month "
+    c = st.columns([1.2, 1, 1, 1, 1.3], vertical_alignment="center")
+    c[0].metric("Candidates", f"{stt['pool'] or 0:,}", help="Top 1,000 by PnL in each of Hyperliquid's week, month "
                 "and all-time lists (union). Refreshed every 6 hours.")
     c[1].metric("Analysed", f"{stt['with_metrics']:,}")
     c[2].metric("Market makers", f"{kinds.get('market_maker', 0):,}")
@@ -101,7 +100,7 @@ def render_board(rcon, cfg) -> None:
         if running:
             st.caption("Refreshing in the background...")
 
-    a, b, v = st.columns([2, 2, 1.4])
+    a, b, v = st.columns([2, 2, 1.4], vertical_alignment="bottom")
     window = a.segmented_control("Window", list(WINDOW_LABELS), default="30d",
                                  format_func=lambda w: WINDOW_LABELS[w], key="tl-window") or "30d"
     sort = b.selectbox("Sort by", list(lbm.SORTS), key="tl-sort")
@@ -214,7 +213,7 @@ METHOD_NOTES = """
   still requires an established trader. Market makers: more than 2,000 fills per active day, or more than 80% maker
   fills with a sub-minute median hold, or more than 30% of fills quoted on both sides within a second. Vaults are
   identified from Hyperliquid's vault records.
-- **Candidates** come from Hyperliquid's unofficial stats file (top 150 by PnL in each of its windows). A trader
+- **Candidates** come from Hyperliquid's unofficial stats file (top 1,000 by PnL in each of its windows, accounts with no trading volume dropped). A trader
   outside those lists can't appear here; that's a selection bias of this board, shown here rather than hidden.
 """
 
@@ -252,7 +251,7 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
     if not options:
         st.info("No leaderboard trader analysed yet; see Top 100.")
         return
-    a, b = st.columns([3, 1])
+    a, b = st.columns([3, 1], vertical_alignment="bottom")
     addr = a.selectbox("Account", options, key="tr-acct")
     if b.button("Sync this trader now", width="stretch"):
         with st.spinner("Fetching fills, funding and account history..."):
@@ -382,17 +381,22 @@ def render_review(trips: pd.DataFrame, fill_times: pd.Series, acct_now: float, p
                                                             help="Negative = what following the rule would have saved."),
                 "trades_flagged": st.column_config.NumberColumn("Trades")})
         b = tr.add_buckets(closed)
-        cols = st.columns(2)
-        for i, (key, title) in enumerate([("coin", "By market"), ("entry_hour_utc", "By entry time (UTC)"),
-                                          ("hold", "By holding time"), ("size_quintile", "By position size")]):
+        tables = []
+        for key, title in [("coin", "By market"), ("entry_hour_utc", "By entry time (UTC)"),
+                           ("hold", "By holding time"), ("size_quintile", "By position size")]:
             bd = tr.breakdown(b, key)
-            if key != "coin":
-                bd = bd.sort_index()
-            cols[i % 2].markdown(f"**{title}**")
-            cols[i % 2].dataframe(bd.rename_axis(title.replace("By ", "").capitalize()), width="stretch", column_config={
-                "trades": "Trades", "win_rate": st.column_config.NumberColumn("Win rate", format="%.2f"),
-                "expectancy": st.column_config.NumberColumn("Expectancy ($)", format="%+,.2f"),
-                "net": st.column_config.NumberColumn("Net ($)", format="%+,.2f")})
+            tables.append((title, bd if key == "coin" else bd.sort_index()))
+        for r in range(0, 4, 2):                      # two per row, same height, so the pair lines up
+            pair = tables[r:r + 2]
+            h = 36 * (max(len(t) for _, t in pair) + 1) + 3
+            cols = st.columns(2)
+            for col, (title, bd) in zip(cols, pair):
+                col.markdown(f"**{title}**")
+                col.dataframe(bd.rename_axis(title.replace("By ", "").capitalize()), width="stretch",
+                              height=min(h, 400), column_config={
+                                  "trades": "Trades", "win_rate": st.column_config.NumberColumn("Win rate", format="%.2f"),
+                                  "expectancy": st.column_config.NumberColumn("Expectancy ($)", format="%+,.2f"),
+                                  "net": st.column_config.NumberColumn("Net ($)", format="%+,.2f")})
         sc = go.Figure()
         for name, part, color in (("Winners", closed[closed["net"] > 0], BLUE), ("Losers", closed[closed["net"] <= 0], ORANGE)):
             sc.add_trace(go.Scatter(x=part["hold_hours"], y=part["return_on_notional"] * 100, mode="markers",
