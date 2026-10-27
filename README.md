@@ -2,37 +2,41 @@
 
 A Python and Streamlit dashboard for the attention, positioning and on-chain
 data I used to check by hand across a dozen websites before making
-discretionary trades. It pulls free public data from about 26 providers,
+discretionary trades. It pulls free public data from about 28 providers,
 cleans it, stores it in a local SQLite database, and shows it in seven views.
 
 It's a data tool, not a trading bot: it informs decisions, it doesn't make them.
 
 **At a glance**
 
-- 266 charts across 37 dashboards, each with an "About this chart" note on how the metric is built
+- 287 charts across 38 dashboards, each with an "About this chart" note on how the metric is built
 - 121 labelled wallets tracked (exchanges, market makers, Bitcoin wallets holding 10,000+ BTC)
-- 118 tests, run without the network against real captured API responses
+- 150+ tests, run without the network against real captured API responses
 - Outputs checked against Glassnode's free reference values where available; every discrepancy and fix is logged in [`BUILD_LOG.md`](BUILD_LOG.md)
 
 ## Views
 
-- **Studio**: 37 dashboards in the style of Glassnode Studio (spot, futures,
-  options, ETFs, macro, on-chain, stablecoins and indicators), built only
-  from free sources and excluding anything that needs a Bitcoin node.
+- **Studio**: 38 dashboards in the style of Glassnode Studio (spot, futures,
+  options, ETFs, macro, on-chain, stablecoins, tokenized equities and
+  indicators), built only from free sources and excluding anything that needs
+  a Bitcoin node. A search box finds any chart or dashboard by name.
 - **Positioning**: funding, open interest, basis, order-book depth and
   imbalance, options skew and options open interest across exchanges.
 - **Flows**: cross-exchange order flow: liquidations, aggregated OI, spot vs
-  perp CVD, funding, spot CVD per exchange, Coinbase premium, and an
-  order-book heatmap.
+  perp CVD, funding, spot CVD per exchange, Coinbase premium, and a
+  liquidation heatmap across Binance, Bybit, OKX and Hyperliquid.
 - **On-chain**: balances and transfers of labelled wallets, flows between
   entities, size and activity cohorts, and how Hyperliquid traders of each
   account size are positioned.
 - **Macro events**: how BTC, ETH, SOL, the S&P 500, Nasdaq, the dollar, gold
   and the 10-year yield moved 1 to 28 days after CPI, PPI, payrolls, jobless
-  claims, FOMC, BoE, BoJ and PBoC decisions, plus the calendar ahead.
-- **Trade review**: a post-trade review tool. Rebuilds round trips from raw
-  fills and flags recurring mistakes, demonstrated on a randomly drawn
-  profitable small-account Hyperliquid trader.
+  claims, FOMC, BoE, BoJ and PBoC decisions, plus the calendar ahead (as a
+  list or a month calendar).
+- **Trade review**: a Top 100 of on-chain perp traders (Hyperliquid), ranked
+  from each trader's own fills, funding and account history rather than the
+  venue's leaderboard, with market makers and vaults excluded by behaviour;
+  each trader opens into a post-trade review that rebuilds round trips from
+  raw fills and flags recurring mistakes.
 - **Data health**: which feeds succeeded or failed on the last run, and why.
 
 Also in this repo: two TradingView Pine Script indicators in [`pine/`](pine/)
@@ -120,10 +124,13 @@ Social Risk = 65% Attention + 35% Speculation.
 ## Positioning
 
 - **Funding** from Bybit, OKX, Binance and Hyperliquid, normalised to an
-  8-hour rate (Hyperliquid pays hourly) and averaged by open interest.
+  8-hour rate using each contract's own payment interval (Hyperliquid pays
+  hourly, some contracts every 4 hours) and averaged by open interest.
+- **Open interest** is one-sided on every venue (Bybit reports both sides,
+  so its figure is halved to its one-sided value).
 - **Basis**: perp mark over spot index.
 - **Open interest** in coins, so price moves don't look like new positions.
-- **Order book**: USD resting within 0.5/1/2% of mid, bid/ask imbalance,
+- **Order book**: USD resting within 0.1% to 5% of mid, bid/ask imbalance,
   and a flag when the snapshot doesn't reach the full band.
 - **25-delta risk reversal** from Deribit options: delta computed with
   Black-76 on each expiry's forward, IV interpolated to exactly 25 delta.
@@ -138,8 +145,12 @@ OKX spot and Binance, Bybit, OKX and Hyperliquid stablecoin-margined perps.
 - **OI in coins** = each exchange's USD OI / its own price, summed.
 - **Funding** = OI-weighted average, % per 8h.
 - **Coinbase premium** = Coinbase BTC-USD / Binance BTC-USDT - 1.
-- **Order-book heatmap**: USD resting per price bucket, saved every minute
-  while recording is on.
+- **Liquidation heatmap**: Binance, Bybit and OKX levels are modelled from
+  each venue's open interest (new positions placed at the bar's price, split
+  long/short by taker flow, spread over a leverage mix; a level disappears
+  once price trades through it). Hyperliquid levels are exact, read from its
+  accounts' positions. Real liquidations recorded from the exchanges' public
+  feeds are drawn on the chart and used to fit the leverage mix.
 - Requests are paced to Coinalyze's rate limit, and every bar is stored
   locally because Coinalyze deletes intraday bars after about 1,500.
 
@@ -155,17 +166,28 @@ because consensus forecasts aren't freely available.
 
 ## Trade review method
 
-Fills from Hyperliquid's public API are rebuilt into round trips: open from
-flat, adds, partial exits, close to flat; a flip closes one trip and opens
-the next. Then: win rate, payoff ratio, profit factor, expectancy, drawdown,
+**Top 100.** Candidates come from Hyperliquid's leaderboard file (the top
+1,000 per window, active accounts first), but every number shown is
+recomputed from the account's own fills, funding and ledger: PnL marked to
+market daily, time-weighted return on equity (deposits and withdrawals don't
+count as performance), Sharpe, Sortino, drawdown and share of winning weeks.
+Market makers, vaults and protocol accounts are excluded by behaviour (fill
+rate, maker share with very short holds, two-sided quoting), and every
+eligibility filter is adjustable. Details in
+[`docs/trade-review-plan.md`](docs/trade-review-plan.md).
+
+**Round trips.** Fills from Hyperliquid's public API are rebuilt into round
+trips: open from flat, adds, partial exits, close to flat; a flip closes one
+trip and opens the next, with the fee split by quantity. Funding is assigned
+to the trip it was paid on, liquidations are detected, and positions already
+open when the history starts are counted and excluded rather than dropped. Then: win rate, payoff ratio, profit factor, expectancy, drawdown,
 fees, and breakdowns by market, entry time, holding time and size. The
 recurring-error check looks for losers held longer than winners, sizing up
 after a loss, averaging down, losing markets and time windows, fee drag and
 overtrading days, and reports what the flagged trades cost.
 
-The trader is a reproducible random draw (seed in config) from leaderboard
-accounts worth $10k to $100k that are profitable all-time and this month and
-actively trading.
+A reproducible random draw (seed in config) from leaderboard accounts worth
+$10k to $100k is still available as a single example.
 
 ## On-chain method
 

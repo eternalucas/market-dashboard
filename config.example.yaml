@@ -54,7 +54,7 @@ positioning:
   # Spot order books used for depth and imbalance, first one that works wins.
   spot_books: [coinbase, kraken, bybit]
   # Distance from mid price used for depth buckets (percent).
-  depth_bands_pct: [0.5, 1.0, 2.0]
+  depth_bands_pct: [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
   # Options skew target, in days to expiry.
   skew_target_days: 30
 
@@ -97,7 +97,7 @@ trade_review:
     single_trade_flag: 0.50       # flag when one trade is more than this share of PnL
 
 onchain:
-  hl_cohort_sample: 15     # accounts sampled per size cohort for positioning
+  hl_cohort_sample: 30     # largest non-bot accounts sampled per size cohort for positioning
   cohort_coins: [BTC, ETH, SOL, HYPE]
 
 display:

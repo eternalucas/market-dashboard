@@ -7,6 +7,7 @@ import pandas as pd
 
 from .charts import Spec
 from .metrics import books as bk
+from .metrics import extra as ex
 from .metrics import futures as fu
 from .metrics import markets as mk
 from .metrics import onchain as oc
@@ -18,6 +19,8 @@ CM, BG, BC, MP, CZ, DB = ("Coin Metrics", "BGeometrics (7-day delayed)", "blockc
                           "Coinalyze", "Deribit")
 RED, GREEN, AMBER = "#e5484d", "#2fbf71", "#f2c94c"
 SOC = "Own indicator, 12 public inputs"
+TSV = "GeckoTerminal DEX pools, CoinGecko issuer tags"
+TSV_NOTE = "About 6 months of history (free GeckoTerminal tier); tokens with < $1k daily volume and pools outside each token's top 3 per chain are left out."
 SOCIAL_ZONES = [(0.85, 1.0, RED, "extreme"), (0.70, 0.85, AMBER, "elevated"), (0.0, 0.30, GREEN, "low")]
 
 
@@ -406,6 +409,15 @@ SPECS: list[Spec] = [
     S("stable_30d", "Stablecoins: Supply 30-Day Percentage Change", "", "DefiLlama", "pct", kind="bars_pn", fn=col(oc.stablecoins, "change_30d_pct")),
     S("stable_dominance", "Stablecoins: Supply Dominance", "", "DefiLlama", "pct", kind="stacked", fn=oc.stablecoin_dominance),
     S("stable_chains", "Stablecoins by Chain", "", "DefiLlama", "usd", kind="stacked", fn=oc.stablecoins_by_chain),
+    # ------------------------------------------------------------- Tokenized equities (own, on-chain DEX)
+    S("ts_issuer_share", "Tokenized Equities: Spot Volume by Token Issuer", "On-chain spot DEX volume of tokenized equities across all chains, % by token issuer.",
+      TSV, "pct", kind="bars", fn=mk.tokenized_share_by_issuer, price=False, yrange=(0, 100), partial=TSV_NOTE),
+    S("ts_issuer_volume", "Tokenized Equities: DEX Volume by Token Issuer", "Daily on-chain spot DEX volume in USD, stacked by token issuer.",
+      TSV, "usd", kind="bars", fn=mk.tokenized_volume_by_issuer, price=False, partial=TSV_NOTE),
+    S("ts_chain_share", "Tokenized Equities: Spot Volume by Chain", "On-chain spot DEX volume of tokenized equities, % by blockchain.",
+      TSV, "pct", kind="bars", fn=mk.tokenized_share_by_chain, price=False, yrange=(0, 100), partial=TSV_NOTE),
+    S("ts_total", "Tokenized Equities: Total DEX Volume", "All tokenized equities, all chains, daily USD.",
+      TSV, "usd", kind="bars", fn=mk.tokenized_total, price=False, partial=TSV_NOTE),
     # ------------------------------------------------------------- Social Risk (own indicator, not Glassnode)
     S("social_risk", "Social Risk", "How crowded retail attention and speculation are: 0 = lowest in two years, 1 = highest.",
       SOC, "ratio", fn=so.score, zones=SOCIAL_ZONES, yrange=(0, 1)),
@@ -455,6 +467,43 @@ SPECS: list[Spec] = [
       "Yahoo", "pct", fn=so.memecoin_share),
 ]
 
+# Added 27 Oct 2026 so every dashboard has an even number of panels (src/metrics/extra.py)
+SPECS += [
+    S("days_since_ath", "Days Since All-Time High", "Days since the daily close last set a record.", CM, "count", fn=ex.days_since_ath),
+    S("rsi_14", "Relative Strength Index (14D)", "Momentum of daily closes, 0-100; above 70 overbought, below 30 oversold.", CM, "num",
+      fn=ex.rsi, zones=[(70, 100, RED, "overbought"), (0, 30, GREEN, "oversold")], yrange=(0, 100)),
+    S("fut_liq_30d", "Futures Liquidations: 30-Day Rolling Total", "Long and short liquidations summed over 30 days.", CZ, "usd",
+      kind="multi", fn=ex.liquidations_30d),
+    S("fut_dated_oi", "Dated Futures Open Interest", "Open interest of expiring (dated) BTC futures, per venue.", "Deribit / Binance / OKX",
+      "usd", kind="stacked", fn=ex.dated_futures_oi, partial="Recorded every 15 minutes since the recorder started."),
+    S("eth_btc", "ETH/BTC Price Ratio", "ETH price in BTC.", CM, "ratio", fn=ex.eth_btc_ratio),
+    S("opt_iv_rv", "Implied vs Realized Volatility (1 Month)", "1-month implied volatility against 30-day realized volatility.", DB + " / " + CM,
+      "frac_pct", kind="multi", fn=ex.iv_vs_realized, columns=["implied_1m", "realized_30d", "premium"]),
+    S("opt_skew_term", "25 Delta Skew Term Structure", "Put-minus-call 25-delta skew of every listed expiry.", DB, "frac_pct",
+      kind="xy", fn=ex.skew_term_structure, price=False, xlabel="Days to expiry"),
+    S("ibit_volume", "IBIT Options Volume", "Daily volume across all IBIT option contracts.", "Yahoo", "count", kind="bars",
+      fn=ex.ibit_volume, partial="Recorded daily from 2026-10-21."),
+    S("etf_cum_flows", "US Spot ETF Cumulative Net Flows", "Running total of daily net flows since launch, USD.", "Farside", "usd",
+      kind="area", fn=ex.etf_cumulative_flows),
+    S("macro_real_rate", "US Real Policy Rate", "Fed funds target minus core CPI inflation.", "FRED", "pct", kind="multi",
+      fn=ex.real_policy_rate, hlines=[(0, "0%")]),
+    S("tradfi_corr", "BTC Correlation to Stocks, Gold and the Dollar (90D)", "90-day correlation of daily returns.", "Yahoo / " + CM,
+      "ratio", kind="multi", fn=ex.btc_correlations, yrange=(-1, 1), hlines=[(0, "")]),
+    S("ex_netflow_usd", "Exchange Netflow (USD, 7D Average)", "Inflow minus outflow in USD, 7-day average.", CM, "usd",
+      kind="bars_pn", fn=ex.exchange_netflow_usd),
+    S("por_change", "Proof of Reserves: 30-Day Change", "Change in BTC held in each exchange's published wallets over 30 days.",
+      "DefiLlama", "btc", kind="bars", fn=ex.por_change_30d),
+    S("whale_supply", "Supply Held by Whales", "Share of supply held by addresses with 1k+ BTC.", BG, "pct", kind="multi",
+      fn=ex.whale_supply_share),
+    S("unrealized_pl", "Net Unrealized Profit/Loss (USD)", "Market cap minus realized cap: holders' total paper profit.", CM, "usd",
+      kind="area_pn", fn=ex.unrealized_pl_usd),
+    S("risk_signals", "Bull Market Risk: Overheating Signals", "How many of six classic top signals are on (0-6).",
+      CM + " / " + BG + " / " + CZ, "count", kind="bars", fn=ex.risk_signals, yrange=(0, 6),
+      zones=[(3, 6, RED, "most signals on")]),
+    S("alt_btc_ratio", "Altcoin / BTC Market Cap Ratio", "Altcoin market cap divided by BTC market cap.", BG + " / " + CM, "ratio",
+      fn=ex.alt_btc_ratio),
+]
+
 BY_ID = {s.id: s for s in SPECS}
 
 # ------------------------------------------------------------------ dashboards
@@ -466,34 +515,34 @@ DASHBOARDS = [
                               "opt_pc_oi", "opt_atm_iv_1m", "opt_skew_norm", "mvrv_z", "realized_price", "nupl", "address_supply", "hodl_waves",
                               "active_addresses", "hashrate", "transfer_volume", "fees_total", "tx_count", "fear_greed", "social_risk", "btc_dominance", "altseason"]),
     ("Spot", "Market", ["ohlc", "mcap", "drawdown", "regional_mom", "realized_vol", "rolling_perf", "perf_cycle_ath", "perf_halving",
-                        "perf_cycle_low", "period_returns", "cagr_4y"]),
+                        "perf_cycle_low", "period_returns", "cagr_4y", "days_since_ath"]),
     ("Spot", "Volume", ["spot_volume", "spot_volume_stacked", "spot_vd", "spot_cvd", "spot_buy_sell", "spot_vol_mcap", "spot_rel_vol",
                         "spot_vol_trend"]),
     ("Spot", "Technical Analysis", ["power_law", "mayer", "pi_cycle", "investor_tool", "ma_200w", "price_temperature", "spot_vwap",
-                                    "spot_obv", "spot_vpt", "spot_adl", "spot_mfi"]),
+                                    "spot_obv", "spot_vpt", "spot_adl", "spot_mfi", "rsi_14"]),
     ("Spot", "Orderbook", ["ob_heatmap", "ob_depth_cb", "ob_depth_bn", "ob_imbalance", "ob_delta", "ob_slope", "ob_spread_cb", "ob_impact"]),
     ("Futures", "Open Interest & Volume", ["fut_oi_cash", "fut_oi_crypto", "fut_oi_stacked", "fut_volume_stacked", "fut_openings",
                                           "fut_closures", "fut_oi_crypto_pct", "fut_leverage", "fut_buy_sell", "fut_vd", "fut_oi_mcap",
                                           "fut_oi_volume", "fut_vol_mcap", "spot_futures_vol"]),
     ("Futures", "Funding Rates", ["fut_funding", "fut_funding_all", "fut_funding_vs_basis", "fut_btc_eth_funding"]),
-    ("Futures", "Liquidations", ["fut_liq", "fut_liq_mean", "fut_liq_dom", "fut_liq_mcap", "fut_liq_oi"]),
-    ("Futures", "Term Structure & Rolling Basis", ["fut_term_structure", "fut_basis_3m", "fut_funding_vs_basis"]),
+    ("Futures", "Liquidations", ["fut_liq", "fut_liq_mean", "fut_liq_dom", "fut_liq_mcap", "fut_liq_oi", "fut_liq_30d"]),
+    ("Futures", "Term Structure & Rolling Basis", ["fut_term_structure", "fut_basis_3m", "fut_funding_vs_basis", "fut_dated_oi"]),
     ("Futures", "Perpetual Orderbook", ["perp_ob_depth", "perp_ob_imbalance", "perp_ob_spread", "perp_ob_depth_oi"]),
     ("Futures", "CME", ["cme_oi", "cme_volume", "cme_positioning", "cme_options_oi"]),
-    ("Futures", "BTC vs ETH", ["fut_btc_eth_oi_dom", "fut_btc_eth_vol_dom", "fut_btc_eth_funding", "btc_eth_dominance", "total_oi"]),
+    ("Futures", "BTC vs ETH", ["fut_btc_eth_oi_dom", "fut_btc_eth_vol_dom", "fut_btc_eth_funding", "btc_eth_dominance", "total_oi", "eth_btc"]),
     ("Options", "Open Interest & Volume", ["opt_oi", "opt_oi_expiry", "opt_pc_oi", "opt_volume", "opt_pc_volume", "opt_oi_strike",
                                            "opt_buy_sell", "opt_call_put_vol"]),
     ("Options", "Implied Volatility", ["opt_term_structure", "opt_smile", "opt_atm_iv", "dvol", "iv_rank", "iv_percentile",
-                                       "opt_delta_surface"]),
+                                       "opt_delta_surface", "opt_iv_rv"]),
     ("Options", "Skew & Gamma", ["opt_skew_norm", "opt_cp_skew", "opt_skew_index", "opt_up_down_iv", "opt_gex_total", "opt_gex_strike",
-                                 "opt_gex_heatmap", "opt_max_pain", "opt_itm"]),
+                                 "opt_gex_heatmap", "opt_max_pain", "opt_itm", "opt_skew_term"]),
     ("Options", "Premiums", ["opt_premium_heatmap", "opt_pwms", "opt_premiums", "opt_net_premium_strike", "opt_bbi", "opt_combo"]),
-    ("Options", "IBIT", ["ibit_atm_iv", "ibit_skew", "ibit_oi", "ibit_pc", "ibit_max_pain"]),
+    ("Options", "IBIT", ["ibit_atm_iv", "ibit_skew", "ibit_oi", "ibit_pc", "ibit_max_pain", "ibit_volume"]),
     ("ETFs", "US Spot ETFs", ["etf_netflows", "etf_netflows_usd", "etf_flows", "etf_balances", "etf_cost_basis", "etf_volume", "etf_volume_fund", "etf_price",
-                              "purpose_etf"]),
+                              "purpose_etf", "etf_cum_flows"]),
     ("DATs", "Public Companies", ["dat_prices", "dat_volume"]),
-    ("Macro", "Macro", ["macro_cb", "macro_rates", "macro_m2", "macro_core_infl", "macro_infl_exp", "macro_debt", "macro_activity"]),
-    ("Macro", "TradFi", ["tradfi_indices", "tradfi_fear", "tradfi_yields", "tradfi_commodities", "tradfi_fx"]),
+    ("Macro", "Macro", ["macro_cb", "macro_rates", "macro_m2", "macro_core_infl", "macro_infl_exp", "macro_debt", "macro_activity", "macro_real_rate"]),
+    ("Macro", "TradFi", ["tradfi_indices", "tradfi_fear", "tradfi_yields", "tradfi_commodities", "tradfi_fx", "tradfi_corr"]),
     ("On-Chain", "Network Statistics", ["active_addresses", "non_zero_addresses", "tx_count", "transfer_count", "supply", "issuance",
                                         "hashrate", "difficulty", "block_size", "block_interval", "utxo_count", "address_momentum",
                                         "tx_momentum", "tx_rate", "inflation", "pct_21m", "fees_total", "fees_mean",
@@ -503,21 +552,22 @@ DASHBOARDS = [
     ("On-Chain", "Mempool", ["mempool_count", "mempool_size", "mempool_fees", "mempool_fee_rates", "mempool_size_bands", "mempool_fee_bands"]),
     ("On-Chain", "Lightning Network", ["ln_capacity", "ln_nodes", "ln_channels", "ln_channel_size", "ln_node_capacity", "ln_channels_change",
                                        "ln_nodes_change", "ln_fees"]),
-    ("On-Chain", "Exchange Balances & Flows", ["ex_balance", "ex_balance_pct", "ex_npc", "ex_netflow", "ex_inout"]),
-    ("On-Chain", "Proof of Reserves", ["por"]),
+    ("On-Chain", "Exchange Balances & Flows", ["ex_balance", "ex_balance_pct", "ex_npc", "ex_netflow", "ex_inout", "ex_netflow_usd"]),
+    ("On-Chain", "Proof of Reserves", ["por", "por_change"]),
     ("On-Chain", "Supply & Holders", ["hodl_waves", "rcap_hodl_waves", "address_counts", "address_supply", "cdd", "cdd_sa", "cdd_90",
-                                      "vdd_multiple", "asol", "supply_profit", "supply_pl"]),
+                                      "vdd_multiple", "asol", "supply_profit", "supply_pl", "whale_supply"]),
     ("On-Chain", "Profit & Loss", ["realized_cap", "realized_price", "mvrv_z", "nupl", "sth_lth_nupl", "supply_profit", "realized_pl",
-                                   "nrpl", "rpl_ratio", "sopr", "asopr", "sth_lth_sopr", "utxo_profit"]),
+                                   "nrpl", "rpl_ratio", "sopr", "asopr", "sth_lth_sopr", "utxo_profit", "unrealized_pl"]),
     ("Indicators", "Cycle Tops & Bottoms", ["mvrv", "mvrv_z", "nupl", "supply_profit", "rhodl", "puell", "mayer", "pi_cycle", "mvrv_bands",
                                             "mvrv_dev_bands", "sth_lth_mvrv", "realized_price"]),
     ("Indicators", "Bull Market Risk", ["mvrv_bands", "supply_profit", "nupl", "rpl_ratio", "sth_lth_price", "sth_lth_mvrv", "rcap_hodl_waves",
-                                        "vdd_multiple", "fut_funding", "fut_oi", "fut_leverage"]),
+                                        "vdd_multiple", "fut_funding", "fut_oi", "fut_leverage", "risk_signals"]),
     ("Indicators", "Bear Market Recovery", ["realized_price", "sth_lth_price", "cost_basis_models", "active_addresses", "transfer_volume",
                                             "fees_total", "nrpl", "sth_lth_sopr", "hodl_waves", "ex_npc"]),
     ("Indicators", "Valuation Models", ["power_law", "s2f", "s2f_deflection", "mvrv_bands", "cost_basis_models", "aviv", "difficulty_regression",
                                         "thermocap", "mcap_thermocap", "nvt", "nvts", "velocity"]),
-    ("Indicators", "Altcoin Season", ["altseason", "btc_dominance", "altcoin_mcap", "total_mcap", "btc_eth_dominance"]),
+    ("Indicators", "Altcoin Season", ["altseason", "btc_dominance", "altcoin_mcap", "total_mcap", "btc_eth_dominance", "alt_btc_ratio"]),
+    ("Tokenized Equities", "Tokenized Equities", ["ts_issuer_share", "ts_issuer_volume", "ts_chain_share", "ts_total"]),
     ("Indicators", "Social Risk", ["social_risk", "social_groups", "social_contrib", "social_coverage",
                                    "social_c_wikipedia_en", "social_c_wikipedia_intl", "social_c_google_trends", "social_c_app_store",
                                    "social_c_youtube", "social_c_hacker_news", "social_c_news", "social_c_x_impressions",

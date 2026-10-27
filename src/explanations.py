@@ -832,3 +832,92 @@ add("social_news",
 add("social_memes",
     "DOGE + SHIB + PEPE volume / the top-50 altcoin volume on Yahoo Finance, 7-day sums, x 100.",
     "Spikes coincide with memecoin manias (DOGE in early 2021, PEPE in 2023, the 2024 memecoin run).")
+
+# =========================================================================== Tokenized equities (own)
+add("ts_issuer_share",
+    "Every tokenized stock CoinGecko lists (its 'Tokenized Stock' category and each issuer's own category) is matched to its issuer: the issuer's category first, otherwise the issuer suffix in CoinGecko's coin id (e.g. '...-ondo-tokenized-stock'). For each token, the five busiest DEX pools on each chain come from GeckoTerminal, and each pool's daily USD volume is credited to the token's issuer. Each bar is the issuer's share of that day's total; a pool is counted once even if both its sides are tokenized stocks.",
+    "Who is winning on-chain trading of tokenized stocks. Shifts are fast because volume follows listings and incentives: a new chain or a DEX campaign can move an issuer's share by tens of points in weeks. Read it with the USD chart: a rising share in a shrinking market means less than it looks.")
+add("ts_issuer_volume",
+    "The same pool volumes as the share chart, in USD, stacked by issuer (the six largest over the last 30 days, the rest grouped as Other).",
+    "The size of on-chain tokenized-equity trading and who carries it. On-chain DEX volume only: centralized-exchange trading of the same tokens isn't included.")
+add("ts_chain_share",
+    "The same pool volumes grouped by the blockchain the pool trades on (GeckoTerminal's network), as a share of the day's total.",
+    "Where tokenized stocks actually trade: Solana DEXs, Ethereum, BNB Chain, Robinhood Chain and others.")
+add("ts_total",
+    "Sum of every tracked pool's daily USD volume, all issuers and chains.",
+    "Overall on-chain demand for tokenized equities. Worth watching around US market events (earnings, index changes) and on weekends, when the underlying stock markets are closed and on-chain venues still trade.")
+
+
+# =========================================================================== Added 27 Oct 2026 (one per odd dashboard)
+add("days_since_ath",
+    "For each day: the number of days since the daily close last reached a new all-time high (0 on a record day).",
+    "Counts up through every correction and resets at each new high. Past bear markets took roughly 1,000+ days to reset; "
+    "bull-market pauses usually reset within a few months. A long count with price near the old high is a market still digesting supply.")
+add("rsi_14",
+    "Daily close changes split into gains and losses, each smoothed with Wilder's 14-day average; RSI = 100 - 100 / (1 + average gain / average loss).",
+    "Above 70 = overbought (strong recent upside), below 30 = oversold. In strong trends RSI can stay overbought or oversold for weeks, "
+    "so the more useful signal is divergence: price making a new high while RSI makes a lower high.")
+add("fut_liq_30d",
+    "Daily long and short liquidations across the covered exchanges (Coinalyze), each summed over a rolling 30 days.",
+    "Shows which side has been forced out over the past month. A spike in long liquidations marks a flush of leveraged buyers, "
+    "often near local lows; heavy short liquidations mark squeezes. When both are low, leverage has been building quietly.")
+add("fut_dated_oi",
+    "Open interest of every dated (expiring) BTC future in the recorded futures curve (Deribit, Binance, OKX), using the last "
+    "snapshot of each day, summed per venue.",
+    "Dated futures are where basis (cash-and-carry) trades live. Rising dated OI alongside a positive basis means more carry trades: "
+    "funds buying spot or ETFs and selling futures, which is market-neutral rather than directional demand.")
+add("eth_btc",
+    "ETH's daily close divided by BTC's daily close (Coin Metrics reference rates).",
+    "Rising = ETH outperforming BTC, typically when risk appetite spreads beyond bitcoin. A falling ratio means capital is concentrating in BTC, "
+    "common in early bull markets and in risk-off periods.")
+add("opt_iv_rv",
+    "Implied: Deribit 1-month constant-maturity ATM IV (DVOL before our own record starts). Realized: standard deviation of daily log returns "
+    "over 30 days x sqrt(365). Premium = implied - realized.",
+    "Options usually price more volatility than is realized (a positive premium) because sellers want to be paid for risk. A large premium "
+    "means options are expensive relative to recent moves; a negative premium means realized moves are outrunning what options priced, "
+    "often during sharp breakouts or sell-offs.")
+add("opt_skew_term",
+    "For every listed Deribit expiry in the latest snapshot: (25-delta put IV - 25-delta call IV) / ATM IV, plotted by days to expiry.",
+    "Positive values mean puts are dearer than calls (demand for downside protection). Comparing short and long expiries shows whether "
+    "fear is about the next few days (short end high) or the longer run.")
+add("ibit_volume",
+    "Sum of each IBIT option contract's daily volume from Yahoo's option chain, recorded after each US close.",
+    "Shows how actively US investors trade bitcoin exposure through ETF options. Spikes often line up with large BTC moves or ETF flow days.")
+add("etf_cum_flows",
+    "Running total of the daily net flows of all US spot bitcoin ETFs (Farside's USD table) since launch.",
+    "The slope matters more than the level: a steepening line means accelerating inflows; a flattening or falling line means demand from "
+    "ETF buyers has stalled or reversed.")
+add("macro_real_rate",
+    "Fed funds target (upper bound, FRED DFEDTARU) minus US core CPI inflation (YoY of CPILFESL), monthly.",
+    "Positive real rates mean money in cash earns more than inflation: tight policy, historically a headwind for risk assets. Falling or "
+    "negative real rates loosen financial conditions and have tended to coincide with strong bitcoin periods.")
+add("tradfi_corr",
+    "90-day rolling correlation between BTC's daily log returns and those of the S&P 500, gold and the US dollar index (Yahoo closes).",
+    "+1 = moving together, -1 = moving opposite, 0 = unrelated. High correlation with stocks means BTC is trading as a risk asset; a negative "
+    "correlation with the dollar is the usual pattern when dollar strength tightens liquidity.")
+add("ex_netflow_usd",
+    "Coin Metrics' exchange inflow minus outflow in USD (FlowInExUSD - FlowOutExUSD), averaged over 7 days.",
+    "Positive = more value moving onto exchanges (potential selling); negative = coins leaving for custody. The USD view weighs each day by "
+    "price, so recent flows count more than the same BTC amount in older, cheaper periods.")
+add("por_change",
+    "For each exchange that publishes its wallets (DefiLlama CEX transparency): BTC held today minus 30 days earlier. The five largest "
+    "exchanges are shown separately, the rest summed.",
+    "Shows which exchanges are gaining or losing BTC. Broad, sustained declines usually mean coins moving to self-custody or ETFs; a "
+    "single exchange's sharp drop can also be an internal wallet change, so check it against its flows.")
+add("whale_supply",
+    "BTC held by addresses with 1k-10k BTC and with more than 10k BTC (BGeometrics balance bands), each divided by circulating supply.",
+    "Large addresses include exchanges, ETF custodians and long-term whales, so changes reflect custody moves as well as buying. A rising "
+    "share during weakness has historically been read as accumulation.")
+add("unrealized_pl",
+    "Market cap minus realized cap (Coin Metrics): the total paper profit (positive) or loss (negative) of all holders, valued at the price "
+    "each coin last moved.",
+    "The USD version of NUPL. Very large paper profits mean many holders have a reason to sell; paper losses across the market have marked "
+    "bear-market lows.")
+add("risk_signals",
+    "Each day, count how many of six classic top signals are on: MVRV above 3, NUPL above 0.6, percent of supply in profit above 95%, "
+    "Mayer Multiple above 2.4, perpetual funding (7-day average) above 0.03% per 8 hours, Fear & Greed above 80. A signal counts once data exists for it.",
+    "0-1 = no sign of overheating. 3 or more at once has historically appeared only near cycle tops or in the most euphoric legs of bull "
+    "markets. It is a checklist, not a timing tool: signals can stay on for weeks.")
+add("alt_btc_ratio",
+    "Altcoin market cap (total crypto market cap minus BTC's) divided by BTC's market cap.",
+    "Rising = money rotating into altcoins relative to bitcoin (altcoin season conditions); falling = bitcoin dominance strengthening.")

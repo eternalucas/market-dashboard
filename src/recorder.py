@@ -49,7 +49,11 @@ def _now() -> pd.Timestamp:
 
 
 class Recorder:
-    def __init__(self):
+    def __init__(self, only: set[str] | None = None, skip: set[str] | None = None):
+        # Two instances run side by side (see start_background): one samples the order books
+        # every minute, the other runs every slower job, so a slow job (a timeout, a long
+        # backfill) never delays the minute samples.
+        self.only, self.skip = only, skip or set()
         self.last_run: dict[str, float] = {}
         self.last_ok_log: dict[str, float] = {}
         self.con = None
@@ -61,7 +65,10 @@ class Recorder:
             self.last_ok_log[source] = time.time()
 
     def fail(self, source: str, e: Exception) -> None:
-        storage.log_fetch(self.con, source, False, 0, f"{type(e).__name__}: {e}")
+        try:
+            storage.log_fetch(self.con, source, False, 0, f"{type(e).__name__}: {e}")
+        except Exception:  # noqa: BLE001 - logging a failure must never raise (e.g. database locked)
+            traceback.print_exc()
 
     # ------------------------------------------------------------------ #
     def job_books(self) -> None:
@@ -201,10 +208,121 @@ class Recorder:
         self._src_thread = threading.Thread(target=run, daemon=True, name="sources")
         self._src_thread.start()
 
+    def job_watched_wallets(self) -> None:
+        """Hourly: balances and every new transaction of the watched Bitcoin
+        wallets (own thread and connection; ~100 wallets take a few minutes)."""
+        if getattr(self, "_ww_thread", None) and self._ww_thread.is_alive():
+            return
+
+        def run():
+            from . import pipeline
+            c = storage.connect()
+            try:
+                pipeline.sync_btc_wallets(c)
+            except Exception as e:  # noqa: BLE001
+                storage.log_fetch(c, "onchain:btc_sync", False, 0, f"{type(e).__name__}: {e}")
+            finally:
+                c.close()
+        self._ww_thread = threading.Thread(target=run, daemon=True, name="watched_wallets")
+        self._ww_thread.start()
+
+    def job_tokenized_stocks(self) -> None:
+        """Daily (checked hourly): tokenized-equity DEX volume by issuer, in its own
+        thread. The first run reads ~6 months of history for every pool (about an
+        hour at GeckoTerminal's free rate limit)."""
+        if getattr(self, "_ts_thread", None) and self._ts_thread.is_alive():
+            return
+        c0 = storage.connect()
+        last = storage.last_success(c0, "src:tokenized_stocks")
+        c0.close()
+        if last is not None and _now() - (last.tz_localize("UTC") if last.tzinfo is None else last) < pd.Timedelta(hours=20):
+            return
+
+        def run():
+            from .sources import tokenized_stocks
+            c = storage.connect()
+            try:
+                n = tokenized_stocks.update(c, say=lambda *_: None)
+                storage.log_fetch(c, "src:tokenized_stocks", True, n)
+            except Exception as e:  # noqa: BLE001
+                storage.log_fetch(c, "src:tokenized_stocks", False, 0, f"{type(e).__name__}: {e}")
+            finally:
+                c.close()
+        self._ts_thread = threading.Thread(target=run, daemon=True, name="tokenized_stocks")
+        self._ts_thread.start()
+
+    def job_hl_liq_scan(self) -> None:
+        """Every 15 minutes: read Hyperliquid accounts' positions (exact liquidation
+        prices) for the liquidation heatmap, in its own thread with its own
+        rate budget, largest accounts first."""
+        if getattr(self, "_hl_thread", None) and self._hl_thread.is_alive():
+            return
+
+        def run():
+            from .config import load_config
+            from .sources import liquidation_feeds as lf
+            c = storage.connect()
+            try:
+                res = lf.scan_hyperliquid(c, load_config()["assets"], budget_s=780, say=lambda *_: None)
+                cov = ", ".join(f"{k} {v:.0%}" for k, v in res["coverage"].items())
+                storage.log_fetch(c, "rec:hl_liq_scan", True, res["scanned"],
+                                  f"{res['scanned']} of {res['accounts']} accounts; OI covered: {cov}")
+            except Exception as e:  # noqa: BLE001
+                storage.log_fetch(c, "rec:hl_liq_scan", False, 0, f"{type(e).__name__}: {e}")
+            finally:
+                c.close()
+        self._hl_thread = threading.Thread(target=run, daemon=True, name="hl_liq_scan")
+        self._hl_thread.start()
+
+    def job_liq_feeds(self) -> None:
+        """Start the live liquidation feeds once (Bybit and Binance websockets,
+        OKX poll); hourly, log how many liquidations each has recorded."""
+        from .sources import liquidation_feeds as lf
+        if getattr(self, "_liq_feeds", None) is None:
+            from .config import load_config
+            try:
+                import websocket  # noqa: F401 - installed by the launcher from requirements.txt
+            except ImportError as e:
+                self.fail("rec:liq_feeds", e)
+                return
+            self._liq_feeds = lf.LiquidationFeeds(load_config()["assets"])
+            self._liq_feeds.start()
+            return
+        msg = ", ".join(f"{k} {v}" for k, v in self._liq_feeds.counts.items()) + " since start"
+        if self._liq_feeds.errors:
+            msg += "; last errors: " + "; ".join(f"{k}: {v}" for k, v in self._liq_feeds.errors.items())
+        storage.log_fetch(self.con, "rec:liq_feeds", True, sum(self._liq_feeds.counts.values()), msg)
+
+    def job_liq_calibrate(self) -> None:
+        """Daily: fit the liquidation model's leverage mix to the recorded
+        liquidations (needs 3+ days and 300+ events per asset)."""
+        if getattr(self, "_cal_thread", None) and self._cal_thread.is_alive():
+            return
+
+        def run():
+            from .collectors import derivatives
+            from .config import load_config
+            from .sources import liquidation_feeds as lf
+            c = storage.connect()
+            for a in load_config()["assets"]:
+                try:
+                    def inputs(asset):
+                        candles, venues, _ = derivatives.liq_model_inputs(asset, "15m", 1400)
+                        return candles, venues
+                    info = lf.calibrate(c, a, inputs)
+                    if info:
+                        storage.log_fetch(c, f"rec:liq_calibrate:{a}", True, info["events"],
+                                          f"weights {info['weights']}, fit {info['score']} vs default {info['default_score']}")
+                except Exception as e:  # noqa: BLE001
+                    storage.log_fetch(c, f"rec:liq_calibrate:{a}", False, 0, f"{type(e).__name__}: {e}")
+            c.close()
+        self._cal_thread = threading.Thread(target=run, daemon=True, name="liq_calibrate")
+        self._cal_thread.start()
+
     def job_trade_leaderboard(self) -> None:
         """Hourly: sync the Top 100 candidates that are due (each account at
         most every 20 h), in its own thread and database (data/trades.db),
-        within a 40-minute budget so a first build spreads over a few runs."""
+        within a 55-minute budget so a first build spreads over a few runs."""
         if getattr(self, "_tl_thread", None) and self._tl_thread.is_alive():
             return
 
@@ -216,7 +334,7 @@ class Recorder:
             log = storage.connect()
             try:
                 el = lbm.Eligibility.from_cfg(load_config())
-                res = lbm.refresh(c, "hyperliquid", budget_s=2400, say=lambda *_: None, el=el)
+                res = lbm.refresh(c, "hyperliquid", budget_s=3300, say=lambda *_: None, el=el)
                 storage.log_fetch(log, "rec:trade_leaderboard", True, res["synced"],
                                   f"pool {res['pool']}, synced {res['synced']}, skipped {res['skipped']}, {res['seconds']} s")
             except Exception as e:  # noqa: BLE001
@@ -238,16 +356,22 @@ class Recorder:
     def job_housekeeping(self) -> None:
         cutoff = (_now() - pd.Timedelta(days=7)).isoformat()
         storage.prune(self.con, "book_levels", "ts < ?", (cutoff,))
+        storage.prune(self.con, "hl_liq_levels", "ts < ?", ((_now() - pd.Timedelta(days=30)).isoformat(),))
+        storage.prune(self.con, "liquidations", "ts < ?", ((_now() - pd.Timedelta(days=120)).isoformat(),))
 
     # ------------------------------------------------------------------ #
-    JOBS = [  # (name, every N seconds)
+    JOBS = [  # (name, every N seconds). Jobs that only start their own thread come first, so after a
+        # restart they start at once instead of waiting for the slower jobs below.
+        ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("watched_wallets", 3600),
+        ("tokenized_stocks", 3600), ("sources", 3600), ("liq_calibrate", 86400),
         ("books", 60), ("futures_curve", 900), ("option_trades", 300), ("option_trades_backfill", 3600), ("option_chain", 3600),
-        ("mempool", 600), ("ibit_chain", 900), ("lightning", 86400), ("sources", 3600), ("option_metrics_catchup", 3600), ("housekeeping", 86400),
-        ("trade_leaderboard", 3600),
+        ("mempool", 600), ("ibit_chain", 900), ("lightning", 86400), ("option_metrics_catchup", 3600), ("housekeeping", 86400),
     ]
 
     def run_due(self) -> None:
         for name, every in self.JOBS:
+            if (self.only is not None and name not in self.only) or name in self.skip:
+                continue
             # align to the clock: a 10-minute job runs at :00, :10, ...
             slot = int(time.time() // every)
             if self.last_run.get(name) == slot:
@@ -262,7 +386,10 @@ class Recorder:
     def loop(self, stop: threading.Event | None = None) -> None:
         self.con = storage.connect()
         while not (stop and stop.is_set()):
-            self.run_due()
+            try:
+                self.run_due()
+            except Exception:  # noqa: BLE001 - the loop must survive anything (it stopped once on a locked database)
+                traceback.print_exc()
             time.sleep(5)
 
 
@@ -280,6 +407,9 @@ def acquire_lock():
         return None
 
 
+FAST_JOBS = {"books"}
+
+
 def start_background() -> str:
     """Start the recorder in a daemon thread unless another process already
     records. Returns 'started', 'running elsewhere' or 'already running'."""
@@ -288,9 +418,10 @@ def start_background() -> str:
     lock = acquire_lock()
     if lock is None:
         return "running elsewhere"
-    t = threading.Thread(target=Recorder().loop, daemon=True, name="recorder")
+    t = threading.Thread(target=Recorder(only=FAST_JOBS).loop, daemon=True, name="recorder")
     t._lock = lock  # keep the lock open for the thread's lifetime
     t.start()
+    threading.Thread(target=Recorder(skip=FAST_JOBS).loop, daemon=True, name="recorder-slow").start()
     start_background._thread = t
     return "started"
 
@@ -310,4 +441,5 @@ if __name__ == "__main__":
         print("Another recorder is already running (the dashboard or another window). Nothing to do.")
     else:
         print("Recording. Leave this window open; close it to stop.")
-        Recorder().loop()
+        threading.Thread(target=Recorder(skip=FAST_JOBS).loop, daemon=True, name="recorder-slow").start()
+        Recorder(only=FAST_JOBS).loop()

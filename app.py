@@ -13,18 +13,33 @@ import streamlit as st
 
 from src import events as ev
 from src import flows, pipeline, recorder, storage, ui_flows, views  # noqa: F401
-from src.collectors import onchain as onchain_api
-from src.indicators import onchain as oc
 from src.config import load_config
 from src.indicators import positioning as pos
 
 st.set_page_config(page_title="Market Dashboard", layout="wide")
+# Every chart: billions as "B", never Plotly's SI "G" (see src/numfmt.py)
+from src.numfmt import fix_si as _fix_si  # noqa: E402
+
+if not getattr(st.plotly_chart, "_fix_si", False):
+    _plotly_chart = st.plotly_chart
+
+    def _plotly_chart_b(fig, *a, **k):
+        return _plotly_chart(_fix_si(fig), *a, **k)
+    _plotly_chart_b._fix_si = True
+    st.plotly_chart = _plotly_chart_b
+from src.running_icons import CSS as _RUNNING_CSS  # noqa: E402
+st.markdown(_RUNNING_CSS, unsafe_allow_html=True)
 
 # Categorical colours, fixed order (validated colour-blind-safe palette).
 BLUE, ORANGE, AQUA, YELLOW, RED = "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e34948"
 SERIES = [BLUE, ORANGE, AQUA, YELLOW]
 # Exchange colours stay fixed whichever exchanges are on screen.
 EXCHANGE_COLORS = {"Coinbase": BLUE, "Binance": RED, "Bybit": AQUA, "OKX": YELLOW, "Hyperliquid": ORANGE}
+# Release labels: hotter / stronger / hike in warm colours, cooler / weaker / cut in cool ones
+LABEL_ORDER = ["Hotter", "Cooler", "Strong", "Weak", "Rising", "Falling", "Hike", "Hold", "Cut"]
+LABEL_COLORS = {"All releases": "#f7f8fa", "Hotter": "#e34948", "Cooler": "#2a78d6", "Strong": "#eb6834",
+                "Weak": "#1baf7a", "Rising": "#e34948", "Falling": "#2a78d6", "Hike": "#e34948", "Hold": "#eda100",
+                "Cut": "#2a78d6"}
 CATEGORY_NAMES = {"exchange": "Exchange", "market_maker": "Market maker", "whale": "Whale", "government": "Government",
                   "hack_or_recovery": "Hack / recovery", "issuer_treasury": "Issuer treasury"}
 CATEGORY_COLORS = {"Exchange": BLUE, "Whale": ORANGE, "Government": AQUA, "Hack / recovery": YELLOW,
@@ -40,6 +55,11 @@ BAND_FILL = {"Elevated": "rgba(237,161,0,0.14)", "Extreme": "rgba(227,73,72,0.16
 
 cfg = load_config()
 con = storage.connect()
+try:
+    pipeline.fix_funding_intervals(con)   # one-off repair, no-op once it has run
+    pipeline.fix_bybit_oi(con, cfg["assets"])
+except Exception:  # noqa: BLE001
+    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -67,9 +87,8 @@ def tab_error(tab: str, e: Exception) -> None:
 
 
 def chart_layout(fig, height=420):
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
-    return fig
+    from src.charts import fixed_layout
+    return fixed_layout(fig, height)
 
 
 # --------------------------------------------------------------------------- #
@@ -115,8 +134,11 @@ elif pd.Timestamp.now(tz="UTC") - last_full > pd.Timedelta(hours=20):
                "for today's numbers; daily updates also build the history some panels need.")
 
 # Social Risk now lives in Studio (Indicators > Social Risk).
+from src import ui_studio  # noqa: E402
+ui_studio.global_search()   # sits at the right end of the tab bar
 tab_studio, tab_pos, tab_flow, tab_chain, tab_events, tab_review, tab_health = st.tabs(
-    ["Studio", "Positioning", "Flows", "On-chain", "Macro events", "Trade review", "Data health"])
+    ["Studio", "Positioning", "Flows", "On-chain", "Macro events", "Trade review", "Data health"],
+    key="main-tabs", on_change="rerun")
 
 with tab_studio:
     try:
@@ -139,9 +161,31 @@ def live_positioning(asset: str) -> dict:
         c.close()
 
 
+EX_NAMES = {"okx": "OKX", "bybit": "Bybit", "binance": "Binance", "hyperliquid": "Hyperliquid"}
+
+
+def price_str(x):
+    """Prices with enough decimals for any coin: 80,477.70 / 100.77 / 1.3202 / 0.078010."""
+    if x is None or pd.isna(x) or x <= 0:
+        return "n/a"
+    dp = max(2, 5 - int(np.floor(np.log10(x))) - 1)
+    return f"{x:,.{dp}f}"
+
+
+def table_height(n_rows: int) -> int:
+    """Exact height for n rows, so a table never shows empty rows."""
+    return 35 * n_rows + 38
+
+
+def pos_chart(fig, height):
+    from src.charts import card_layout
+    return card_layout(fig, height)
+
+
 with tab_pos:
     try:
-        top = st.columns([1, 1, 4])
+        from src.ui_studio import card
+        top = st.columns([1, 1, 4], vertical_alignment="bottom")
         asset = top[0].selectbox("Asset", cfg["assets"])
         if top[1].button("Refresh live", width="stretch"):
             live_positioning.clear()
@@ -152,144 +196,196 @@ with tab_pos:
         st.subheader(f"{asset} spot vs futures positioning")
         m = st.columns(5)
         m[0].metric("Funding (OI-weighted, 8h)", pct(summ.get("oi_weighted_funding_8h"), 4),
-                    help="What longs pay shorts every 8 hours, averaged across exchanges by open interest.")
-        m[1].metric("Funding, annualised", pct(summ.get("oi_weighted_funding_annual"), 1))
-        m[2].metric("Open interest (total)", usd_bn(summ.get("total_oi_usd")))
+                    help="What longs pay shorts per 8 hours, averaged across exchanges by open interest. Rates from "
+                         "contracts that pay hourly or every 4 hours are scaled to 8 hours first. 0.01% is the "
+                         "standard rate exchanges charge when the perp trades close to spot.")
+        m[1].metric("Funding, annualised", pct(summ.get("oi_weighted_funding_annual"), 1),
+                    help="The 8-hour rate x 3 payments a day x 365 (simple, not compounded). 0.01% per 8h = 10.95% a year.")
+        m[2].metric("Open interest (total)", usd_bn(summ.get("total_oi_usd")),
+                    help="Sum of the open interest on the exchanges in the table below (one side, in USD).")
         m[3].metric("Perp basis vs spot", pct(summ.get("oi_weighted_basis"), 3),
-                    help="Perp price premium over the spot index. Positive = leverage demand on the long side.")
+                    help="Perp price premium over the spot index, OI-weighted. Positive = leverage demand on the long side.")
         m[4].metric("25d risk reversal", pct(skew.get("risk_reversal"), 1) if skew else "n/a",
                     help="IV of 25-delta calls minus 25-delta puts (Deribit). Negative = paying up for downside protection.")
 
         if live["snaps"]:
-            tbl = pd.DataFrame(live["snaps"]).assign(
-                basis_bps=lambda d: (d["mark"] / d["index"] - 1) * 1e4,
-                funding_8h_pct=lambda d: d["funding_8h"] * 100,
-                funding_annual_pct=lambda d: pos.annualize_funding(d["funding_8h"]) * 100,
-                oi_bn=lambda d: d["oi_usd"] / 1e9,
-            )[["exchange", "mark", "index", "basis_bps", "funding_8h_pct", "funding_annual_pct", "oi_bn"]]
-            st.dataframe(tbl, hide_index=True, width="stretch", column_config={
-                "mark": st.column_config.NumberColumn("Mark", format="%.2f"),
-                "index": st.column_config.NumberColumn("Spot index", format="%.2f"),
-                "basis_bps": st.column_config.NumberColumn("Basis (bps)", format="%.1f"),
-                "funding_8h_pct": st.column_config.NumberColumn("Funding 8h %", format="%.4f"),
-                "funding_annual_pct": st.column_config.NumberColumn("Funding ann. %", format="%.1f"),
-                "oi_bn": st.column_config.NumberColumn("OI ($bn)", format="%.2f"),
+            snaps = pd.DataFrame(live["snaps"])
+            tbl = pd.DataFrame({
+                "Exchange": snaps["exchange"].map(EX_NAMES).fillna(snaps["exchange"]),
+                "Mark": snaps["mark"].map(price_str),
+                "Spot index": snaps["index"].map(price_str),
+                "basis_bps": (snaps["mark"] / snaps["index"] - 1) * 1e4,
+                "interval": snaps["interval_h"].map(lambda h: f"{h:g}h"),
+                "rate_pct": snaps["funding_rate"] * 100,
+                "funding_8h_pct": snaps["funding_8h"] * 100,
+                "funding_annual_pct": pos.annualize_funding(snaps["funding_8h"]) * 100,
+                "oi_bn": snaps["oi_usd"] / 1e9,
             })
+            with card("pos-perps", f"{asset} perpetuals by exchange",
+                      desc="Live snapshot. Exchanges quote funding per payment, and the payment interval differs "
+                           "(Hyperliquid pays hourly; some contracts pay every 4h), so each rate is also shown scaled "
+                           "to 8 hours and annualised for a like-for-like comparison. Spot index is each exchange's own "
+                           "index (Hyperliquid: its oracle price). OI is one side, in USD.",
+                      source="Binance, Bybit, OKX and Hyperliquid public APIs"):
+                st.dataframe(tbl, hide_index=True, width="stretch", height=table_height(len(tbl)), column_config={
+                    "basis_bps": st.column_config.NumberColumn("Basis (bps)", format="%.1f",
+                                                               help="(mark / spot index - 1) in basis points."),
+                    "interval": st.column_config.TextColumn("Pays every"),
+                    "rate_pct": st.column_config.NumberColumn("Funding per payment %", format="%.5f",
+                                                              help="The rate as the exchange quotes it, per payment."),
+                    "funding_8h_pct": st.column_config.NumberColumn("Funding 8h %", format="%.4f",
+                                                                    help="Per-payment rate x 8 / hours between payments."),
+                    "funding_annual_pct": st.column_config.NumberColumn("Funding ann. %", format="%.2f",
+                                                                        help="8h rate x 3 x 365."),
+                    "oi_bn": st.column_config.NumberColumn("OI ($bn)", format="%.3f"),
+                })
         if live["errors"]:
             st.caption("Unavailable right now: " + ", ".join(sorted(live["errors"])) + " (details in Data health).")
 
         left, right = st.columns(2)
-
         with left:
-            st.markdown("**Funding history (8h rate)**")
             hist = storage.load_prefix(con, "funding_hist_8h:")
             hist = {k.split(":")[1]: v for k, v in hist.items() if k.endswith(f":{asset}")}
-            if hist:
-                f = go.Figure()
-                for i, (ex, s) in enumerate(sorted(hist.items())):
-                    s = s[s.index >= s.index.max() - pd.Timedelta(days=60)]
-                    f.add_trace(go.Scatter(x=s.index, y=s * 100, name=ex, line=dict(color=SERIES[i % 4], width=2)))
-                f.add_hline(y=0.01, line_dash="dot", line_color="gray", annotation_text="0.01% baseline")
-                f.update_yaxes(title_text="% per 8h")
-                st.plotly_chart(chart_layout(f, 340), width="stretch")
-                ref_ex = sorted(hist)[0]
-                z = pos.zscore_latest(hist[ref_ex])
+            note = ""
+            if hist and "binance" in hist:
+                z = pos.zscore_latest(hist["binance"])
                 if not pd.isna(z):
-                    st.caption(f"Latest {ref_ex} funding is {z:+.1f} standard deviations from its last-90-payments average.")
-            else:
-                st.caption("No funding history yet. Run **Update all data**.")
+                    note = f" Latest Binance payment: {z:+.1f} SD vs its last 90."
+            with card("pos-funding-hist", "Funding history (8h-equivalent rate)", paired=True,
+                      desc="Each payment scaled to an 8-hour rate, last 60 days (OKX ~1 month, Hyperliquid 20 days). "
+                           "Dotted line: the standard 0.01%." + note,
+                      source="Binance, Bybit, OKX, Hyperliquid funding history", expandable=True) as cc:
+                if hist:
+                    f = go.Figure()
+                    for i, (ex, s) in enumerate(sorted(hist.items())):
+                        s = s[s.index >= s.index.max() - pd.Timedelta(days=60)]
+                        f.add_trace(go.Scatter(x=s.index, y=s * 100, name=EX_NAMES.get(ex, ex),
+                                               line=dict(color=SERIES[i % 4], width=1.6)))
+                    f.add_hline(y=0.01, line_dash="dot", line_color="gray")
+                    f.update_yaxes(title_text="% per 8h")
+                    cc.chart(pos_chart(f, 320), width="stretch", config={"displayModeBar": False})
+                else:
+                    st.caption("No funding history yet. Run **Update all data**.")
 
         with right:
-            st.markdown("**Open interest history (coins)**")
             oi = storage.load_prefix(con, "oi_coin_hist:")
             oi = {k.split(":")[1]: v for k, v in oi.items() if k.endswith(f":{asset}")}
-            if oi:
-                f = go.Figure()
-                for i, (ex, s) in enumerate(sorted(oi.items())):
-                    f.add_trace(go.Scatter(x=s.index, y=s, name=ex, line=dict(color=SERIES[i % 4], width=2)))
-                f.update_yaxes(title_text=f"OI ({asset})")
-                st.plotly_chart(chart_layout(f, 340), width="stretch")
-                st.caption("In coins rather than dollars, so a price rally alone doesn't look like new positioning.")
-            else:
-                st.caption("No open-interest history yet.")
+            with card("pos-oi-hist", f"Open interest history ({asset})", paired=True,
+                      desc="Daily open interest in coins rather than dollars, so a price rally alone doesn't look like "
+                           "new positioning. Binance serves the last 30 days, Bybit about 6 months.",
+                      source="Binance, Bybit open-interest history", expandable=True) as cc:
+                if oi:
+                    f = go.Figure()
+                    for i, (ex, s) in enumerate(sorted(oi.items())):
+                        f.add_trace(go.Scatter(x=s.index, y=s, name=EX_NAMES.get(ex, ex),
+                                               line=dict(color=SERIES[i % 4], width=1.6)))
+                    f.update_yaxes(title_text=f"OI ({asset})")
+                    cc.chart(pos_chart(f, 320), width="stretch", config={"displayModeBar": False})
+                else:
+                    st.caption("No open-interest history yet.")
 
-        st.markdown("**Spot order book: depth and imbalance**")
         if live.get("depth") is not None:
             meta = live["book_meta"]
-            st.caption(f"{meta['venue'].title()} {asset}-USD | mid {meta['mid']:,.2f} | spread {meta['spread_bps']:.2f} bps | "
-                       f"book returned reaches {meta['bid_reach_pct']:.2f}% below and {meta['ask_reach_pct']:.2f}% above mid")
             d = live["depth"].assign(bid=lambda x: x["bid_usd"].map(usd_m), ask=lambda x: x["ask_usd"].map(usd_m))
-            bl, br = st.columns([2, 3])
-            bl.dataframe(d[["band_pct", "bid", "ask", "imbalance", "complete"]], hide_index=True, width="stretch",
-                         column_config={"band_pct": st.column_config.NumberColumn("Within ±%", format="%.1f"),
-                                        "imbalance": st.column_config.NumberColumn("Imbalance", format="%+.2f",
-                                            help="(bids - asks) / (bids + asks). Negative = more resting supply."),
-                                        "complete": st.column_config.CheckboxColumn("Full band",
-                                            help="Unticked = the exchange's book snapshot doesn't reach this far.")})
-            bids, asks = live["book"]
-            curve = pos.depth_curve(bids, asks, max(cfg["positioning"]["depth_bands_pct"]))
-            f = go.Figure()
-            for side, color in (("bid", BLUE), ("ask", ORANGE)):
-                c = curve[curve["side"] == side]
-                f.add_trace(go.Scatter(x=c["dist_pct"], y=c["cum_usd"] / 1e6, name=f"{side}s", line=dict(color=color, width=2),
-                                       fill="tozeroy", line_shape="hv"))
-            f.update_xaxes(title_text="Distance from mid (%)")
-            f.update_yaxes(title_text="Cumulative depth ($m)")
-            br.plotly_chart(chart_layout(f, 300), width="stretch")
+            h = table_height(len(d))
+            with card("pos-book", "Spot order book: depth and imbalance",
+                      desc=f"{meta['venue'].title()} {asset}-USD · mid {price_str(meta['mid'])} · spread "
+                           f"{meta['spread_bps']:.2f} bps · the book returned reaches {min(meta['bid_reach_pct'], 100):.1f}% "
+                           f"below and {meta['ask_reach_pct']:,.0f}% above mid. USD resting within each distance of mid; "
+                           "imbalance = (bids - asks) / (bids + asks).",
+                      source=f"{meta['venue'].title()} public order book"):
+                bl, br = st.columns([2, 3])
+                bl.dataframe(d[["band_pct", "bid", "ask", "imbalance", "complete"]], hide_index=True, width="stretch",
+                             height=h,
+                             column_config={"band_pct": st.column_config.NumberColumn("Within ±%", format="%g"),
+                                            "bid": st.column_config.TextColumn("Bids"),
+                                            "ask": st.column_config.TextColumn("Asks"),
+                                            "imbalance": st.column_config.NumberColumn("Imbalance", format="%+.2f",
+                                                help="(bids - asks) / (bids + asks). Negative = more resting supply."),
+                                            "complete": st.column_config.CheckboxColumn("Full band",
+                                                help="Unticked = the exchange's book snapshot doesn't reach this far.")})
+                bids, asks = live["book"]
+                curve = pos.depth_curve(bids, asks, 2.0)
+                f = go.Figure()
+                for side, color in (("bid", BLUE), ("ask", ORANGE)):
+                    c = curve[curve["side"] == side]
+                    f.add_trace(go.Scatter(x=c["dist_pct"], y=c["cum_usd"] / 1e6, name=f"{side}s",
+                                           line=dict(color=color, width=1.6), fill="tozeroy", line_shape="hv"))
+                f.update_xaxes(title_text="Distance from mid (%)")
+                f.update_yaxes(title_text="Cumulative depth ($m)")
+                br.plotly_chart(pos_chart(f, h), width="stretch", config={"displayModeBar": False})
         else:
             st.caption("No order book available right now.")
 
-        st.markdown("**Options skew (Deribit)**")
-        if skew:
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Expiry used", f"{skew['expiry']:%d %b %y} ({skew['days_to_expiry']:.0f}d)")
-            s2.metric("ATM IV", pct(skew["atm_iv"], 1))
-            s3.metric("25d call IV", pct(skew["call25_iv"], 1))
-            s4.metric("25d put IV", pct(skew["put25_iv"], 1))
-        elif asset not in ("BTC", "ETH"):
-            st.caption("Deribit's SOL options are thin and USDC-settled, so skew covers BTC and ETH only.")
-        else:
-            st.caption("Options data unavailable right now.")
         rr = storage.load_series(con, f"skew_rr25:{asset}")
-        if len(rr) > 1:
-            f = go.Figure(go.Scatter(x=rr.index, y=rr * 100, name="25d RR", line=dict(color=BLUE, width=2)))
-            f.add_hline(y=0, line_color="gray")
-            f.update_yaxes(title_text="vol points")
-            st.plotly_chart(chart_layout(f, 260), width="stretch")
-            st.caption("Skew history builds from each refresh.")
+        if skew or asset in ("BTC", "ETH"):
+            with card("pos-skew", "Options skew (Deribit)",
+                      desc=(f"Expiry closest to 30 days. IVs at exactly 25 delta are interpolated between neighbouring "
+                            f"strikes (Black-76 on Deribit's forward). The chart shows the 25d risk reversal "
+                            f"(call IV - put IV) from each refresh." if skew else "Options data unavailable right now."),
+                      source="Deribit public API", expandable=True) as cc:
+                if skew:
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric("Expiry used", f"{skew['expiry']:%d %b %y} ({skew['days_to_expiry']:.0f}d)",
+                              help="The listed expiry closest to 30 days out (at least 3 days away).")
+                    s2.metric("ATM IV", pct(skew["atm_iv"], 1),
+                              help="Implied volatility of the at-the-money options (strikes nearest the forward price) "
+                                   "for this expiry: the market's expected annualised move. Divide by about 19 for a "
+                                   "one-day move (e.g. 38% ≈ ±2% a day).")
+                    s3.metric("25d call IV", pct(skew["call25_iv"], 1),
+                              help="Implied volatility of the out-of-the-money call with a 25% delta (roughly a 1-in-4 "
+                                   "chance of finishing in the money): the price of upside exposure.")
+                    s4.metric("25d put IV", pct(skew["put25_iv"], 1),
+                              help="Implied volatility of the out-of-the-money put with a 25% delta: the price of "
+                                   "downside protection. Higher than the 25d call IV = puts are in demand.")
+                if len(rr) > 1:
+                    f = go.Figure(go.Scatter(x=rr.index, y=rr * 100, name="25d risk reversal",
+                                             line=dict(color=BLUE, width=1.6)))
+                    f.add_hline(y=0, line_color="gray")
+                    f.update_yaxes(title_text="vol points")
+                    cc.chart(pos_chart(f, 260), width="stretch", config={"displayModeBar": False})
+        else:
+            st.caption("Deribit's SOL and other alt options are thin or not listed, so skew covers BTC and ETH only.")
 
         opts = live.get("options")
         if opts is not None and not opts.empty:
-            st.markdown("**Options open interest: net delta and strikes (Deribit)**")
             greeks = pos.options_with_delta(opts, pd.Timestamp.now(tz="UTC"))
             by_exp = pos.net_delta_by_expiry(greeks)
-            o1, o2, o3 = st.columns(3)
-            o1.metric("Net delta, all expiries", f"{greeks['delta_oi'].sum():+,.0f} {asset}",
-                      help="Sum of open interest x delta: the exposure option holders carry in aggregate. "
-                           "Positive = holders net positioned for upside.")
-            o2.metric("Put/call OI ratio", f"{greeks.loc[greeks['type']=='P','oi'].sum() / max(greeks.loc[greeks['type']=='C','oi'].sum(), 1e-9):.2f}")
-            o3.metric("Open interest", f"{greeks['oi'].sum():,.0f} {asset}")
-            el, er = st.columns([2, 3])
-            show = by_exp.head(10).reset_index()
-            show["expiry"] = show["expiry"].dt.strftime("%d %b %y")
-            el.dataframe(show, hide_index=True, width="stretch", column_config={
-                "call_oi": st.column_config.NumberColumn("Call OI", format="%,.0f"),
-                "put_oi": st.column_config.NumberColumn("Put OI", format="%,.0f"),
-                "net_delta": st.column_config.NumberColumn("Net delta", format="%+,.0f"),
-                "put_call_ratio": st.column_config.NumberColumn("P/C", format="%.2f")})
-            exp_pick = er.selectbox("Expiry for strike chart", by_exp.index,
-                                    index=int(by_exp["call_oi"].add(by_exp["put_oi"]).values.argmax()),
-                                    format_func=lambda e: f"{e:%d %b %y}")
-            strikes = pos.oi_by_strike(greeks, exp_pick)
-            fwd = float(greeks.loc[greeks["expiry"] == exp_pick, "forward"].median())
-            strikes = strikes[(strikes.index > fwd * 0.6) & (strikes.index < fwd * 1.4)]
-            f = go.Figure()
-            f.add_trace(go.Bar(x=strikes.index, y=strikes.get("C", 0), name="Calls", marker_color=BLUE))
-            f.add_trace(go.Bar(x=strikes.index, y=-strikes.get("P", 0), name="Puts (shown below zero)", marker_color=ORANGE))
-            f.add_vline(x=fwd, line_dash="dot", line_color="gray", annotation_text="forward")
-            f.update_layout(barmode="relative", bargap=0.15)
-            f.update_yaxes(title_text=f"Open interest ({asset})")
-            er.plotly_chart(chart_layout(f, 300), width="stretch")
+            with card("pos-options-oi", "Options open interest: net delta and strikes (Deribit)",
+                      desc=f"Open interest in {asset}. Net delta = sum of open interest x delta: the exposure option "
+                           "holders carry in aggregate (writers carry the opposite); who is long or short isn't public. "
+                           "Table: the 10 nearest expiries. Chart: calls above zero, puts below, for the expiry picked.",
+                      source="Deribit public API"):
+                o1, o2, o3 = st.columns(3)
+                o1.metric("Net delta, all expiries", f"{greeks['delta_oi'].sum():+,.0f} {asset}",
+                          help="Positive = holders net positioned for upside.")
+                o2.metric("Put/call OI ratio",
+                          f"{greeks.loc[greeks['type']=='P','oi'].sum() / max(greeks.loc[greeks['type']=='C','oi'].sum(), 1e-9):.2f}")
+                o3.metric("Open interest", f"{greeks['oi'].sum():,.0f} {asset}")
+                exp_pick = st.selectbox("Expiry for strike chart", by_exp.index,
+                                        index=int(by_exp["call_oi"].add(by_exp["put_oi"]).values.argmax()),
+                                        format_func=lambda e: f"{e:%d %b %y}")
+                el, er = st.columns([2, 3])
+                show = by_exp.head(10).reset_index()
+                show["expiry"] = show["expiry"].dt.strftime("%d %b %y")
+                h = table_height(len(show))
+                el.dataframe(show, hide_index=True, width="stretch", height=h, column_config={
+                    "expiry": st.column_config.TextColumn("Expiry"),
+                    "call_oi": st.column_config.NumberColumn("Call OI", format="%,.0f"),
+                    "put_oi": st.column_config.NumberColumn("Put OI", format="%,.0f"),
+                    "net_delta": st.column_config.NumberColumn("Net delta", format="%+,.0f"),
+                    "put_call_ratio": st.column_config.NumberColumn("P/C", format="%.2f")})
+                strikes = pos.oi_by_strike(greeks, exp_pick)
+                fwd = float(greeks.loc[greeks["expiry"] == exp_pick, "forward"].median())
+                strikes = strikes[(strikes.index > fwd * 0.6) & (strikes.index < fwd * 1.4)]
+                f = go.Figure()
+                f.add_trace(go.Bar(x=strikes.index, y=strikes.get("C", 0), name="Calls", marker_color=BLUE))
+                f.add_trace(go.Bar(x=strikes.index, y=-strikes.get("P", 0), name="Puts (shown below zero)",
+                                   marker_color=ORANGE))
+                f.add_vline(x=fwd, line_dash="dot", line_color="gray", annotation_text="forward")
+                f.update_layout(barmode="relative", bargap=0.15)
+                f.update_yaxes(title_text=f"Open interest ({asset})")
+                er.plotly_chart(pos_chart(f, h), width="stretch", config={"displayModeBar": False})
     except Exception as e:  # noqa: BLE001 - one broken tab must not blank the others
         tab_error("tab_pos", e)
 
@@ -311,174 +407,8 @@ with tab_flow:
 
 with tab_chain:
     try:
-        st.subheader("Watched wallets")
-        st.caption("Exchanges, market makers and every Bitcoin wallet holding 10,000+ BTC, from public labels "
-                   "(Etherscan name tags, the bitinfocharts rich list). Balances and transfers come from public "
-                   "explorers (mempool.space, Blockscout). Edit watchlist.yaml to add wallets, e.g. ones you see on Arkham.")
-        wl = onchain_api.load_watchlist()
-        wl["category"] = wl["category"].map(CATEGORY_NAMES).fillna(wl["category"])
-        btc_px = storage.load_series(con, "price:BTC")
-        eth_px = storage.load_series(con, "price:ETH")
-        px_now = {"btc": btc_px.iloc[-1] if not btc_px.empty else np.nan,
-                  "eth": eth_px.iloc[-1] if not eth_px.empty else np.nan}
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Wallets watched", f"{len(wl)}", help="Bitcoin and Ethereum")
-        k2.metric("Failing checksum", f"{int((~wl['valid']).sum())}")
-        k3.metric("Entities", f"{wl['entity'].nunique()}")
-
-        rows = []
-        for w in wl.itertuples():
-            bal = storage.load_series(con, f"onchain_bal:{w.chain}:{w.address}")
-            latest = bal.iloc[-1] if not bal.empty else np.nan
-            def chg(days):
-                """Change vs the latest reading at least `days` old; NaN until one exists."""
-                past = bal[bal.index <= bal.index[-1] - pd.Timedelta(days=days)] if not bal.empty else bal
-                return latest - past.iloc[-1] if len(past) else np.nan
-            prev = latest - bal.iloc[-2] if len(bal) >= 2 else np.nan
-            rows.append({"Label": w.label, "Entity": w.entity, "Category": w.category, "Chain": w.chain.upper(),
-                         "Balance": latest, "USD": latest * px_now.get(w.chain, np.nan),
-                         "Since last update": prev, "Change 7d": chg(7), "Change 30d": chg(30), "Address": w.address})
-        bals = pd.DataFrame(rows)
-        n_days = max((len(storage.load_series(con, f"onchain_bal:{w.chain}:{w.address}")) for w in wl.head(5).itertuples()), default=0)
-        if n_days < 2:
-            st.caption("Balance changes appear once the dashboard has two daily updates on different days. "
-                       "Run **Update all data** once a day.")
-        if bals["Balance"].notna().any():
-            st.markdown("**Balances by cohort**")
-            cat = bals.dropna(subset=["Balance"]).groupby(["Chain", "Category"]).agg(
-                wallets=("Label", "size"), balance=("Balance", "sum"), usd=("USD", "sum"),
-                change=("Since last update", lambda x: x.sum(min_count=1))).reset_index()
-            st.dataframe(cat, hide_index=True, width="stretch", column_config={
-                "wallets": "Wallets",
-                "balance": st.column_config.NumberColumn("Balance (coins)", format="%,.0f"),
-                "usd": st.column_config.NumberColumn("USD", format="$%,.0f"),
-                "change": st.column_config.NumberColumn("Change since last update (coins)", format="%+,.0f")})
-            hist = []
-            for w in wl[wl["chain"] == "btc"].itertuples():
-                b = storage.load_series(con, f"onchain_bal:btc:{w.address}")
-                if len(b):
-                    hist.append(b.rename(w.category))
-            if hist and max(len(h) for h in hist) > 1:
-                byc = pd.concat(hist, axis=1).T.groupby(level=0).sum().T
-                f = go.Figure()
-                for c in byc.columns:
-                    f.add_trace(go.Scatter(x=byc.index, y=byc[c], name=c, line=dict(color=CATEGORY_COLORS.get(c, YELLOW), width=2)))
-                f.update_yaxes(title_text="BTC held")
-                st.plotly_chart(chart_layout(f, 320), width="stretch")
-            st.markdown("**Every wallet**")
-            st.dataframe(bals.sort_values("USD", ascending=False), hide_index=True, width="stretch", column_config={
-                "Balance": st.column_config.NumberColumn(format="%,.2f"),
-                "USD": st.column_config.NumberColumn(format="$%,.0f"),
-                "Since last update": st.column_config.NumberColumn(format="%+,.2f"),
-                "Change 7d": st.column_config.NumberColumn(format="%+,.2f"),
-                "Change 30d": st.column_config.NumberColumn(format="%+,.2f")})
-            st.caption("Blank 7-day and 30-day changes fill in once there are daily updates that far back.")
-        else:
-            st.info("No balances yet. Run **Update all data**.")
-
-        labels = {a.lower(): e for a, e in zip(wl["address"], wl["entity"])}
-        btc_tx = views.onchain_file("btc_txs.csv")
-        if not btc_tx.empty:
-            st.markdown("**Bitcoin: recent moves by watched wallets**")
-            btc_tx["time"] = pd.to_datetime(btc_tx["time"], utc=True)
-            meta = wl.set_index("address")
-            btc_tx["Label"] = btc_tx["address"].map(meta["label"])
-            btc_tx["Category"] = btc_tx["address"].map(meta["category"])
-            btc_tx["USD"] = btc_tx["net_btc"] * px_now["btc"]
-            btc_tx["Size"] = oc.size_cohort(btc_tx["USD"].abs())
-            btc_tx["Counterparty"] = btc_tx["counterparties"].fillna("").map(
-                lambda c: ", ".join(sorted({labels.get(a.lower(), "") for a in str(c).split()} - {""})) or "unlabelled")
-            recent = btc_tx[btc_tx["time"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)]
-            daily = recent.groupby([recent["time"].dt.date, "Category"])["net_btc"].sum().unstack(fill_value=0)
-            if not daily.empty:
-                f = go.Figure()
-                for c in daily.columns:
-                    f.add_trace(go.Bar(x=daily.index, y=daily[c], name=c, marker_color=CATEGORY_COLORS.get(c, YELLOW)))
-                f.update_layout(barmode="relative")
-                f.update_yaxes(title_text="Net BTC in (+) / out (-)")
-                st.plotly_chart(chart_layout(f, 300), width="stretch")
-            a1, a2 = st.columns([3, 2])
-            a1.dataframe(recent.sort_values("time", ascending=False)[["time", "Label", "Category", "net_btc", "USD", "Size", "Counterparty"]].head(50),
-                         hide_index=True, width="stretch", column_config={
-                             "time": st.column_config.DatetimeColumn("Time (UTC)", format="YYYY-MM-DD HH:mm"),
-                             "net_btc": st.column_config.NumberColumn("Net BTC", format="%+,.2f"),
-                             "USD": st.column_config.NumberColumn(format="dollar")})
-            size_tbl = recent.groupby("Size", observed=False).agg(moves=("txid", "size"), usd=("USD", lambda x: x.abs().sum()))
-            a2.dataframe(size_tbl.rename_axis("Move size"), width="stretch", column_config={
-                "moves": st.column_config.NumberColumn("Moves"),
-                "usd": st.column_config.NumberColumn("USD moved", format="$%,.0f")})
-            act = btc_tx.groupby("address")["time"].max()
-            cohorts = (oc.wallet_activity(act, pd.Timestamp.now(tz="UTC")).value_counts()
-                       .reindex(["Active (7d)", "Recent (30d)", "Quiet (1y)", "Dormant (>1y)"]).fillna(0).astype(int))
-            a2.dataframe(cohorts.rename_axis("Last activity").rename("Wallets"), width="stretch")
-            a2.caption("Activity cohorts use each wallet's latest transaction in the data fetched so far.")
-
-        eth_tr = views.onchain_file("eth_transfers.csv")
-        if not eth_tr.empty:
-            st.markdown("**Ethereum: flows between entities (ERC-20 tokens)**")
-            eth_tr["time"] = pd.to_datetime(eth_tr["time"], utc=True)
-            days = st.select_slider("Window", options=[1, 7, 30, 90], value=7, format_func=lambda d: f"{d}d", key="eth_win")
-            win = eth_tr[eth_tr["time"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)].copy()
-            # Moves between two wallets of the same firm are internal shuffles, not flows
-            same = win["from"].str.lower().map(labels).fillna("a") == win["to"].str.lower().map(labels).fillna("b")
-            win = win[~same]
-            st.caption(f"{int(same.sum())} internal transfers (between two wallets of the same firm) are left out.")
-            flows_tbl = oc.entity_flows(win, labels).rename(columns={"from_entity": "From", "to_entity": "To", "transfers": "Transfers"})
-            e1, e2 = st.columns([3, 2])
-            e1.dataframe(flows_tbl, hide_index=True, width="stretch",
-                         column_config={"usd": st.column_config.NumberColumn("USD", format="$%,.0f")})
-            mm = flows_tbl[flows_tbl["From"].isin(["Wintermute", "Jump Trading"]) | flows_tbl["To"].isin(["Wintermute", "Jump Trading"])]
-            e2.markdown("Market-maker flows")
-            e2.dataframe(mm, hide_index=True, width="stretch",
-                         column_config={"usd": st.column_config.NumberColumn("USD", format="$%,.0f")})
-            big = win[win["usd"] >= 1_000_000].assign(
-                From=lambda d: d["from"].str.lower().map(labels).fillna(d["from"].str[:10] + "..."),
-                To=lambda d: d["to"].str.lower().map(labels).fillna(d["to"].str[:10] + "..."))
-            st.caption(f"Transfers of $1M or more in the window: {len(big)}")
-            st.dataframe(big.sort_values("time", ascending=False)[["time", "From", "To", "token", "amount", "usd"]].head(50),
-                         hide_index=True, width="stretch",
-                         column_config={"time": st.column_config.DatetimeColumn("Time (UTC)", format="YYYY-MM-DD HH:mm"),
-                                        "token": "Token",
-                                        "usd": st.column_config.NumberColumn("USD", format="$%,.0f"),
-                                        "amount": st.column_config.NumberColumn("Amount", format="%,.2f")})
-
-        st.subheader("Hyperliquid trader cohorts")
-        st.caption("Every Hyperliquid account is public. Active leaderboard accounts are grouped by account size; "
-                   "a sample from each group is checked for open positions, showing how small and large traders lean.")
-        lbc = views.onchain_file("hl_leaderboard.csv")
-        hpos = views.onchain_file("hl_cohort_positions.csv")
-        if lbc.empty:
-            st.caption("No cohort data yet. Run **Update all data**.")
-        else:
-            order = oc.HL_LABELS
-            sizes = lbc.groupby("cohort").agg(accounts=("address", "size"), total_value=("account_value", "sum"),
-                                              month_pnl=("month_pnl", "sum")).reindex(order).dropna(how="all").rename_axis("Cohort")
-            turnover = (pd.crosstab(lbc["cohort"], lbc["turnover"]).reindex(order).dropna(how="all")
-                        .reindex(columns=["Low (<2x/mo)", "Medium (2-20x)", "High (>20x)"]).rename_axis("Cohort").rename_axis(None, axis=1))
-            h1, h2 = st.columns(2)
-            h1.dataframe(sizes, width="stretch", column_config={
-            "accounts": st.column_config.NumberColumn("Accounts", format="%,d"),
-                "total_value": st.column_config.NumberColumn("Account value", format="$%,.0f"),
-                "month_pnl": st.column_config.NumberColumn("PnL this month", format="dollar")})
-            h2.dataframe(turnover, width="stretch")
-            h2.caption("Turnover = monthly volume / account size: how often each cohort trades.")
-            if not hpos.empty:
-                summ = oc.cohort_positioning(hpos)
-                coin = st.selectbox("Coin", [c for c in cfg["onchain"]["cohort_coins"] if c in set(summ["coin"])] or sorted(summ["coin"].unique()))
-                one = summ[summ["coin"] == coin].set_index("cohort").reindex(order).dropna(how="all").reset_index()
-                f = go.Figure()
-                f.add_trace(go.Bar(x=one["cohort"], y=one["long_usd"] / 1e6, name="Long", marker_color=BLUE))
-                f.add_trace(go.Bar(x=one["cohort"], y=-one["short_usd"] / 1e6, name="Short (below zero)", marker_color=ORANGE))
-                f.update_layout(barmode="relative")
-                f.update_yaxes(title_text=f"{coin} positions ($m)")
-                st.plotly_chart(chart_layout(f, 320), width="stretch")
-                st.dataframe(one, hide_index=True, width="stretch", column_config={
-                    "cohort": "Cohort", "coin": "Coin", "accounts": "Accounts",
-                    "long_usd": st.column_config.NumberColumn("Long", format="$%,.0f"),
-                    "short_usd": st.column_config.NumberColumn("Short", format="$%,.0f"),
-                    "net_usd": st.column_config.NumberColumn("Net", format="dollar"),
-                    "long_share": st.column_config.NumberColumn("Long share", format="percent")})
-                st.caption(f"Sample: up to {cfg['onchain']['hl_cohort_sample']} most active accounts per cohort.")
+        from src import ui_onchain
+        ui_onchain.render(con, cfg, CATEGORY_NAMES, CATEGORY_COLORS, (BLUE, ORANGE))
     except Exception as e:  # noqa: BLE001 - one broken tab must not blank the others
         tab_error("tab_chain", e)
 
@@ -490,8 +420,8 @@ with tab_events:
     try:
         st.subheader("Macro event study")
         st.caption("How each asset moved in the days and weeks after past releases, to gauge the tone of the period "
-                   "ahead. Day 1 = the event day, measured from the previous close. 'Excess' = the event's average "
-                   "move minus the asset's typical move over the same number of days.")
+                   "ahead. Day 1 = the event day, measured from the previous close. 'vs a normal period' = the event's "
+                   "average move minus the asset's normal move over the same number of days (any start day since 2018).")
         events_df, ev_prices, bp_assets = views.event_inputs(con, cfg)
         if events_df.empty or not ev_prices:
             st.info("No events yet. Add your FRED key to config.yaml (api_keys > fred), then run **Update all data**. "
@@ -502,7 +432,7 @@ with tab_events:
             ev_asset = c1.selectbox("Asset", list(ev_prices), key="ev_asset")
             ev_names = sorted(events_df["event"].unique())
             ev_type = c2.selectbox("Event", ev_names, key="ev_type", index=ev_names.index("CPI") if "CPI" in ev_names else 0)
-            ev_h = c3.selectbox("Horizon for the calendar", horizons, index=min(2, len(horizons) - 1),
+            ev_h = c3.selectbox("Horizon", horizons, index=min(2, len(horizons) - 1),
                                 format_func=lambda h: f"{h} day{'s' if h > 1 else ''}")
             in_bp = ev_asset in bp_assets
             unit = "bp" if in_bp else "%"
@@ -512,10 +442,19 @@ with tab_events:
             rt = ev.reaction_table(past, {ev_asset: px}, horizons, bp_assets)
             typical = {(ev_asset, h): ev.typical_move(px, h, in_bp) for h in horizons}
 
-            st.markdown("**Coming up (next 30 days)**")
             today = pd.Timestamp.now().normalize()
+            hc1, hc2 = st.columns([4, 1], vertical_alignment="bottom")
+            cal_view = hc2.toggle("Calendar view", key="ev_cal_view", help="Show the events on a monthly calendar.")
+            hc1.markdown("**Calendar**" if cal_view else "**Coming up (next 30 days)**")
             upcoming = events_df[(events_df["date"] >= today) & (events_df["date"] <= today + pd.Timedelta(days=30))]
-            if upcoming.empty:
+            if cal_view:
+                from src import ui_calendar
+                months = [today + pd.DateOffset(months=k) for k in range(0, 3)]
+                pick = st.segmented_control("Month", months, default=months[0], key="ev_cal_month",
+                                            format_func=lambda d: f"{d:%B %Y}", label_visibility="collapsed")
+                pick = pick or months[0]
+                st.markdown(ui_calendar.month_html(events_df, pick.year, pick.month, today), unsafe_allow_html=True)
+            elif upcoming.empty:
                 st.caption("Nothing scheduled in the calendar for the next 30 days.")
             else:
                 summ_all = ev.summarize(rt, typical, by_label=False) if not rt.empty else pd.DataFrame()
@@ -525,58 +464,122 @@ with tab_events:
                 up = upcoming.assign(
                     Day=lambda d: d["date"].dt.strftime("%a %d %b"),
                     **{f"Avg {ev_asset} move ({ev_h}d)": lambda d: d["event"].map(lambda e: hist_for(e, "avg")),
-                       "Excess vs typical": lambda d: d["event"].map(lambda e: hist_for(e, "excess")),
+                       "vs a normal period": lambda d: d["event"].map(lambda e: hist_for(e, "excess")),
                        "Past events": lambda d: d["event"].map(lambda e: hist_for(e, "n"))})
                 show = up.drop(columns=["date", "label"]).rename(columns={"event": "Event"})
-                for col in (f"Avg {ev_asset} move ({ev_h}d)", "Excess vs typical"):
+                for col in (f"Avg {ev_asset} move ({ev_h}d)", "vs a normal period"):
                     show[col] = show[col].map(lambda v: fmt(v) if pd.notna(v) else "n/a")
-                st.dataframe(show[["Day", "Event", f"Avg {ev_asset} move ({ev_h}d)", "Excess vs typical", "Past events"]],
-                             hide_index=True, width="stretch")
+                st.dataframe(show[["Day", "Event", f"Avg {ev_asset} move ({ev_h}d)", "vs a normal period", "Past events"]],
+                             hide_index=True, width="stretch", column_config={
+                                 "vs a normal period": st.column_config.TextColumn(
+                                     "vs a normal period", help=f"Average move after this event minus the average "
+                                     f"{ev_h}-day {ev_asset} move starting on any day since 2018. Positive = "
+                                     f"{ev_asset} has done better than usual after this event.")})
 
             if not rt.empty:
-                st.markdown(f"**{ev_type}: {ev_asset} after past releases**")
+                from src.charts import card_layout
+                from src.ui_studio import card
                 one = rt[rt["event"] == ev_type]
-                summ = ev.summarize(one[one["label"] != "n/a"], typical, by_label=True) if (one["label"] != "n/a").any() else pd.DataFrame()
-                summ_all1 = ev.summarize(one, typical, by_label=False).assign(label="All releases")
-                summ = pd.concat([summ_all1, summ])
-                tbl = summ.pivot_table(index="label", columns="h", values="avg")
-                exc = summ.pivot_table(index="label", columns="h", values="excess")
-                hit = summ.pivot_table(index="label", columns="h", values="pct_up")
-                n = summ.groupby("label")["n"].max()
-                out = pd.DataFrame(index=tbl.index)
-                out["Events"] = n
-                for h in horizons:
-                    if h in tbl:
-                        out[f"{h}d avg"] = tbl[h].map(fmt)
-                        out[f"{h}d excess"] = exc[h].map(fmt)
-                        out[f"{h}d % up"] = hit[h].map(lambda v: f"{v:.0%}")
-                st.dataframe(out.rename_axis("Releases"), width="stretch")
-                st.caption("Labels compare the release with the previous reading (consensus forecasts aren't free), "
-                           "using FRED's current, revised data. FOMC: hike / cut / hold.")
-
                 evs = past[past["event"] == ev_type]
-                path = ev.average_path(evs, px, days=max(horizons), in_bp=in_bp)
-                base = [ev.typical_move(px, h, in_bp) for h in path.index]
-                f = go.Figure()
-                for i, c in enumerate(path.columns):
-                    y = path[c] if in_bp else path[c] * 100
-                    f.add_trace(go.Scatter(x=path.index, y=y, name=c, line=dict(color=SERIES[i % 4], width=2)))
-                f.add_trace(go.Scatter(x=path.index, y=base if in_bp else [b * 100 for b in base], name="Typical (any day)",
-                                       line=dict(color="gray", width=2, dash="dot")))
-                f.add_hline(y=0, line_color="gray", line_width=1)
-                f.update_xaxes(title_text="Days after the event (1 = event day)")
-                f.update_yaxes(title_text=f"Average cumulative move ({unit})")
-                st.plotly_chart(chart_layout(f, 360), width="stretch")
+                labels = [x for x in LABEL_ORDER if x in set(one["label"])] + \
+                    sorted(set(one["label"]) - set(LABEL_ORDER) - {"n/a"})
+                groups = [("All releases", one)] + [(lb, one[one["label"] == lb]) for lb in labels]
+                scale = 1 if in_bp else 100
+                label_note = ("Labels compare each release with the previous reading (consensus forecasts aren't free), "
+                              "using FRED's current, revised data. FOMC: hike / cut / hold.") if labels else ""
 
-                last = one.pivot_table(index=["date", "label"], columns="h", values="move").sort_index(ascending=False).head(12)
-                last = last.apply(lambda col: col.map(fmt))
-                last.columns = [f"{h}d" for h in last.columns]
-                if (one["label"] == "n/a").all():
-                    last = last.droplevel("label")   # this event type has no labels
-                st.markdown("Most recent releases")
-                st.dataframe(last.reset_index().assign(date=lambda d: d["date"].dt.strftime("%Y-%m-%d")),
-                             hide_index=True, width="stretch")
-                st.caption("When two events share a day (e.g. CPI and jobless claims), both get the same move.")
+                # 1. average path (kept): the whole 28 days at a glance
+                path = ev.average_path(evs, px, days=max(horizons), in_bp=in_bp)
+                base = [ev.typical_move(px, h, in_bp) * scale for h in path.index]
+                with card("ev-path", f"{ev_asset} after {ev_type}: average path",
+                          desc=f"Average cumulative {ev_asset} move from the close before the release (day 1 = release "
+                               f"day). The dotted line is a normal {ev_asset} move over the same number of days, starting "
+                               f"on any day since 2018: a line above it means {ev_asset} did better than usual after the "
+                               f"release. {label_note}",
+                          source="FRED release dates and data, Yahoo Finance prices", expandable=True) as cc:
+                    f = go.Figure()
+                    for i, c in enumerate(path.columns):
+                        name = c.split(" (n=")[0]
+                        f.add_trace(go.Scatter(x=path.index, y=path[c] * scale, name=c,
+                                               line=dict(color=LABEL_COLORS.get(name, SERIES[i % 4]), width=2)))
+                    f.add_trace(go.Scatter(x=path.index, y=base, name="Normal (any day)",
+                                           line=dict(color="#8b8b8b", width=2, dash="dot")))
+                    f.add_hline(y=0, line_color="#555", line_width=1)
+                    f.update_xaxes(title_text="Days after the release (1 = release day)")
+                    f.update_yaxes(title_text=f"Average move ({unit})", ticksuffix="" if in_bp else "%")
+                    cc.chart(card_layout(f, 340), width="stretch", config={"displayModeBar": False})
+
+                left, right = st.columns(2)
+                # 2. how often it was up, against how often it is up on any day
+                with left:
+                    with card("ev-hit", f"How often {ev_asset} was higher", paired=True,
+                              desc=f"Share of past releases after which {ev_asset} was higher than the close before the "
+                                   f"release, at each horizon. Grey bars: how often {ev_asset} is higher over the same "
+                                   f"number of days starting on any day. Far above grey = a real tilt; near it = a coin flip.",
+                              source="FRED, Yahoo Finance", expandable=True) as cc:
+                        f = go.Figure()
+                        xs = [f"{h}d" for h in horizons]
+                        f.add_trace(go.Bar(x=xs, y=[ev.typical_up_share(px, h) * 100 for h in horizons],
+                                           name="Any day", marker_color="rgba(139,139,139,0.45)"))
+                        for i, (lb, g) in enumerate(groups):
+                            hit = g.groupby("h")["move"].apply(lambda x: (x > 0).mean() * 100)
+                            cnt = g.groupby("h")["move"].size()
+                            f.add_trace(go.Bar(x=xs, y=[hit.get(h, np.nan) for h in horizons], name=lb,
+                                               marker_color=LABEL_COLORS.get(lb, SERIES[i % 4]),
+                                               customdata=[cnt.get(h, 0) for h in horizons],
+                                               hovertemplate="%{y:.0f}% of %{customdata} releases<extra>" + lb + "</extra>"))
+                        f.add_hline(y=50, line_color="#555", line_width=1, line_dash="dot")
+                        f.update_layout(barmode="group", bargap=0.25, bargroupgap=0.05)
+                        f.update_yaxes(title_text="% of releases up", range=[0, 100], ticksuffix="%")
+                        cc.chart(card_layout(f, 320), width="stretch", config={"displayModeBar": False})
+
+                # 3. range of outcomes at the chosen horizon
+                with right:
+                    typ_h = ev.typical_move(px, ev_h, in_bp) * scale
+                    with card("ev-range", f"Range of {ev_asset} moves after {ev_type} ({ev_h}d)", paired=True,
+                              desc=f"Every past release as a dot, by label. The box covers the middle half of outcomes, "
+                                   f"the line inside it is the median. Dotted line: a normal {ev_h}-day {ev_asset} move. "
+                                   f"Averages hide how wide the outcomes are; this shows it.",
+                              source="FRED, Yahoo Finance", expandable=True) as cc:
+                        f = go.Figure()
+                        sub = one[one["h"] == ev_h]
+                        for i, (lb, g) in enumerate(groups):
+                            gh = g[g["h"] == ev_h]
+                            f.add_trace(go.Box(y=gh["move"] * scale, name=f"{lb} ({len(gh)})", boxpoints="all",
+                                               jitter=0.45, pointpos=0, marker=dict(size=4, opacity=0.6),
+                                               line=dict(width=1.4), fillcolor="rgba(0,0,0,0)",
+                                               marker_color=LABEL_COLORS.get(lb, SERIES[i % 4]),
+                                               customdata=gh["date"].dt.strftime("%d %b %Y"),
+                                               hovertemplate="%{customdata}: %{y:+.2f}" + ("bp" if in_bp else "%") +
+                                                             "<extra></extra>"))
+                        f.add_hline(y=typ_h, line_color="#8b8b8b", line_dash="dot")
+                        f.add_hline(y=0, line_color="#555", line_width=1)
+                        f.update_layout(showlegend=False, hovermode="closest")
+                        f.update_yaxes(title_text=f"Move over {ev_h}d ({unit})", ticksuffix="" if in_bp else "%")
+                        cc.chart(card_layout(f, 320), width="stretch", config={"displayModeBar": False})
+
+                # 4. release by release over time
+                sub = one[one["h"] == ev_h].sort_values("date")
+                with card("ev-history", f"Every {ev_type} release: {ev_asset} move over the next {ev_h} days",
+                          desc=f"One dot per release, coloured by label; hover for the date and move. The white line is "
+                               f"the average of the last 12 releases, to show whether the reaction has changed over time. When two events share a day (e.g. CPI and jobless "
+                               f"claims), both get the same move. Change the horizon with the selector above.",
+                          source="FRED, Yahoo Finance", expandable=True) as cc:
+                    f = go.Figure()
+                    sfx = "bp" if in_bp else "%"
+                    for i, (lb, g) in enumerate(groups[1:] or groups):
+                        g = sub if lb == "All releases" else sub[sub["label"] == lb]
+                        f.add_trace(go.Scatter(x=g["date"], y=g["move"] * scale, name=lb, mode="markers",
+                                               marker=dict(color=LABEL_COLORS.get(lb, SERIES[i % 4]), size=7,
+                                                           line=dict(width=0)),
+                                               hovertemplate="%{x|%d %b %Y}: %{y:+.2f}" + sfx + "<extra>" + lb + "</extra>"))
+                    roll = sub.set_index("date")["move"].rolling(12, min_periods=6).mean() * scale
+                    f.add_trace(go.Scatter(x=roll.index, y=roll, name="Average of the last 12 releases",
+                                           line=dict(color="#f7f8fa", width=1.6),
+                                           hovertemplate="%{x|%d %b %Y}: %{y:+.2f}" + sfx + "<extra>12-release avg</extra>"))
+                    f.update_layout(hovermode="closest")
+                    f.update_yaxes(title_text=f"Move over {ev_h}d ({unit})", ticksuffix="" if in_bp else "%")
+                    cc.chart(card_layout(f, 320), width="stretch", config={"displayModeBar": False})
     except Exception as e:  # noqa: BLE001 - one broken tab must not blank the others
         tab_error("tab_events", e)
 

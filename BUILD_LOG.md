@@ -155,3 +155,76 @@ Remaining out of tolerance (source definitions, not bugs):
 - The recorder runs `trade_leaderboard` hourly, with a 40-minute budget per run.
 - UI: Trade review → Top 100 | Trader review (leaderboard trader with a Data quality panel, or the original random draw).
 - Tests: 118 pass (new: reconstruction, attribution, mark-to-market identity, real-wallet reconciliation, leaderboard pipeline on a fake venue).
+
+- 26 Oct (later): only 4 traders were eligible from the top 150 per window, because the biggest Hyperliquid earners are mostly position traders with few completed trades. The pool is now the top 1,000 per window, with accounts that have no trading volume dropped and the most active accounts synced first. The recorder budget is now 55 min per hourly run.
+
+## 2026-10-26: On-chain tab review and rebuild
+- Walkthrough findings:
+  - The Bitcoin transaction feed kept only each wallet's newest ~25 transactions, captured on manual updates days apart. For 23 of 92 wallets, the transactions didn't add up to the balance change; for example, a Binance cold wallet gained 7,640 BTC with no transactions recorded.
+  - Hyperliquid cohorts:
+    - 2,786 emptied accounts (under $100 now) were counted as "Shrimp".
+    - The positioning sample took the most active accounts, which were mostly market makers and HFT (median sample turnover 200x to 26,000,000x a month).
+    - The table showed summed PnL, which a few outliers dominate.
+- Fixes:
+  - Hourly incremental sync of every watched Bitcoin wallet in the recorder: pages through every new transaction since the last one stored, stores hourly balances, and tracks `complete_since` per wallet.
+  - New flows section with a window selector (24 h, 7 d, 30 d, 90 d), category and entity filters. It shows net, inflow, outflow and transactions, a cumulative flow chart and a per-entity table with balances and history coverage.
+  - Moves between two wallets of the same entity count as internal and are left out of flows.
+  - USD uses each day's BTC close, not today's price.
+  - The section refreshes every 2 minutes.
+  - "Every wallet" now sits in an expander.
+  - Cohorts:
+    - Emptied accounts are excluded and counted separately.
+    - The table shows median PnL, % profitable and bot share.
+    - The positioning sample is the largest non-bot accounts (turnover ≤ 100x a month).
+- Tests: 123 pass (new: flow grouping, internal moves, windows and coverage, sync paging and hole detection).
+
+## 2026-10-26: Alignment pass across the dashboard
+- Studio: panels are laid out row by row (pairs start at the same height). Titles are one line (full title on hover) and descriptions are clamped to 3 lines (full text on hover and in About this chart). Charts use fixed margins with no auto-margins, so paired plot areas match exactly; single-series charts drop their redundant legend entry; the x-axis label of overlay charts sits inside the plot. Measured: every pair of real charts in the dashboards checked has identical panel and plot-area positions.
+- Other tabs: the same fixed-margin layout. Control rows are bottom-aligned (Positioning Refresh live, Flows Fetch latest, Studio controls, Trade review). The options expiry picker moved above its table and chart pair. Paired tables have equal heights (Trade review breakdowns, Ethereum flows, order-book depth).
+
+- 26 Oct: search box at the right end of the main tab bar. It autocompletes over all 37 dashboards and 266 charts; picking one opens Studio on that dashboard or chart from any tab (tabs are keyed so search can switch to Studio).
+
+## 2026-10-27: Tokenized equities
+- New Studio dashboard "Tokenized Equities": daily on-chain spot DEX volume by token issuer (100% stacked share, like Blockworks' chart), the same in USD, share by chain, and total volume.
+- Sources (free, no key): CoinGecko categories and coin ids give each tokenized stock's issuer and contract addresses; GeckoTerminal gives each token's DEX pools and their daily USD volume (~6 months of history). Recorder job `tokenized_stocks` runs daily in its own thread; the first run takes about an hour.
+- Coverage: DEX volume only (no centralised venues or issuer apps); tokens with under $1k daily volume and pools beyond each token's 3 busiest are left out. Share charts show no headline number; stacked USD bars show the day's total.
+
+## 2026-10-27: Positioning clean-up and data check
+- Every block on the Positioning tab is now a bordered card like the Studio charts: title on top, description and source underneath (perpetuals table, funding history, open interest history, order book, options skew, options open interest). Tables are sized to their rows (no empty rows); the order book shows 6 distance bands (0.1% to 5%). ATM IV, 25d call IV and 25d put IV have hover explanations.
+- Funding fix: exchanges quote funding per payment, and some contracts pay every 4h (checked live: Binance HYPE and ENA, Bybit ENA; Hyperliquid pays hourly). These 4h rates were treated as 8h rates, so they showed half their real value. Live snapshots now read each contract's interval (Bybit fundingIntervalHour, Binance fundingInfo, OKX next minus current funding time) and history reads it from the payment spacing. A one-off repair rescaled the stored history and recomputed the OI-weighted average for HYPE and ENA. The table now shows the interval, the raw per-payment rate, the 8h equivalent and the annualised rate.
+- Prices in the table keep enough decimals for small coins (DOGE 0.078010, not 0.08).
+- Checked live on 27 Oct against the exchanges for all 8 assets: BTC funding really is 0.01% per 8h on all four exchanges (the standard rate when the perp trades near spot); mark, index, OI and basis match the exchange APIs; Coinbase books are complete to well beyond 5%; Deribit 25d IVs match Deribit's own deltas (BTC 30d: ATM 35.7%, 25d call 34.9%, 25d put 38.2%).
+
+## 2026-10-27: Macro events, new charts
+- The release summary table and the "Most recent releases" table are gone. In their place, four bordered cards: the average path (kept, now coloured by label: hotter / strong / hike warm, cooler / weak / cut cool), "How often <asset> was higher" (share of releases up at each horizon, next to how often the asset is up over the same number of days starting on any day), "Range of moves" (box and dots of every past release at the chosen horizon), and "Every release" (one dot per release over time, with the average of the last 12 releases).
+- "Excess vs typical" is renamed "vs a normal period", with a hover explanation. The horizon selector now drives the calendar and the two horizon charts.
+
+- 27 Oct: chart legends are 12.5px everywhere (between the 11.5px descriptions and the 14px titles).
+- 27 Oct: the running indicator beside Deploy cycles through a bar chart, a money bag and the Bitcoin logo (same size and grey) instead of Streamlit's swimmer / plane / runner icons (src/running_icons.py).
+
+## 2026-10-27: Liquidation heatmap replaces the order-book heatmap
+- Flows > "Liquidation heatmap (estimated)", in the style of Coinglass: estimated liquidation levels for the Binance USDT perpetual, coloured purple -> teal -> green -> yellow, with candles on top, a liquidity-threshold slider and a "Liquidation map" side panel (USD at each price right now: longs below in red, shorts above in green). Windows 12h to 30 days.
+- Model (src/indicators/liquidations.py): when open interest rises, the new positions open at the bar's typical price, split long/short by the bar's taker buy/sell volume, and spread over 10x/25x/50x/100x leverage (30/30/25/15%); liquidation price = p(1 - 1/L + 0.4%) for longs, p(1 + 1/L - 0.4%) for shorts. Falling OI shrinks every level by the same share; a level is removed once price trades through it. Twice the window is fetched so levels opened before the window are already on the chart at its left edge. Data: Binance klines, openInterestHist and takerlongshortRatio (public, no key; OI history is limited to 30 days).
+- The old order-book heatmap and its once-a-minute recording on the Flows tab are removed (the Studio order-book charts keep recording through the background recorder). The liquidation heatmap works without a Coinalyze key.
+
+## 2026-10-27: Liquidation heatmap across Binance, Bybit, OKX and Hyperliquid
+- One chart, four venues. Binance, Bybit and OKX are modelled from each venue's own open interest (5-minute to 1-hour bars; taker buy/sell split from Binance and OKX, Binance's used for Bybit). Hyperliquid levels are exact: a recorder job reads Hyperliquid accounts' positions every 15 minutes (largest accounts every scan, the rest in rotation, own 300-weight/min budget) and stores each scan's liquidation levels; the caption shows the share of Hyperliquid open interest covered.
+- Actual liquidations are recorded live (Bybit allLiquidation websocket, Binance !forceOrder websocket, OKX liquidation-orders every minute), drawn as dots on the chart, and used daily to fit the model's leverage mix (5x/10x/25x/50x/100x) to where liquidations really happened (needs 3+ days and 300+ events; until then the default mix). New dependency: websocket-client (small, pure Python), installed by the launcher.
+- Fix: Bybit's openInterest counts both sides (Bybit docs: "the sum of both sides"); every other venue reports one side. Bybit OI now uses singleOpenInterest(Value), and a one-off repair halves the stored Bybit OI and recomputes the cross-exchange totals and OI-weighted averages.
+- 27 Oct: Macro events, "Calendar view" toggle: the scheduled events on a month calendar (this month and the next two), coloured by event type; today outlined, past days dimmed (src/ui_calendar.py).
+- 27 Oct: space under the macro calendar; full-screen button (top right of the card) on the Macro events charts and the Positioning funding, open-interest and skew charts.
+- 27 Oct (fix): the recorder loop stopped at 15:28 after a "database is locked" error while logging a failure. The loop and its failure logging now survive any error; Hyperliquid positions are kept in their own database (data/hl_positions.db) and written one account at a time; the liquidation writer retries when the database is busy; the tokenized-stocks network list stops at GeckoTerminal's last page instead of failing.
+- 27 Oct: the recorder runs as two loops: one samples the order books every minute, the other runs every slower job, so a slow job (timeouts, long backfills) never delays the minute samples (after a restart the first pass used to hold the books up for 10+ minutes).
+- 27 Oct: jobs that only start their own thread (liquidation feeds, Hyperliquid scan, Top 100, wallets, tokenized stocks, sources, calibration) run first in the slow loop, so after a restart they start at once.
+- 27 Oct (fix): the On-chain Bitcoin flows section (which refreshes every 2 minutes) used the page's database connection from another thread and errored; it now opens its own.
+
+## 2026-10-27: Billions as B everywhere
+- Plotly writes billions as "G" (giga) when a value uses its SI number format, which the Studio hovers and the liquidation heatmap did. src/numfmt.py rewrites every SI-formatted hover value (T/B/M/K) and switches SI tick formats to Plotly's "B" exponent labels; app.py applies it to every chart drawn with st.plotly_chart, so new charts are covered too.
+
+## 2026-10-27: Even dashboards
+- 17 Studio dashboards had an odd number of charts (an empty slot at the bottom right). Each got one new related chart (src/metrics/extra.py, with explanations): Days Since ATH (Spot Market), RSI 14D (Technical Analysis), 30-Day Rolling Liquidations (Liquidations), Dated Futures OI (Term Structure), ETH/BTC (BTC vs ETH), Implied vs Realized Vol (Implied Volatility), 25 Delta Skew Term Structure (Skew & Gamma), IBIT Options Volume (IBIT), Cumulative ETF Net Flows (US Spot ETFs), US Real Policy Rate (Macro), BTC Correlations (TradFi), Exchange Netflow USD (Exchange Flows), Proof of Reserves 30-Day Change (Proof of Reserves), Supply Held by Whales (Supply & Holders), Net Unrealized P/L USD (Profit & Loss), Overheating Signals (Bull Market Risk), Altcoin/BTC Market Cap Ratio (Altcoin Season). A test keeps every dashboard even.
+- 27 Oct (fix): charts whose data frame ended up with a plain (non-date) index, e.g. Supply Held by Address Balance when one balance band is missing, ignored the range buttons and the price overlay; dates are restored before drawing. Count values under 1,000 are shown without decimals.
+
+## 2026-10-27: On-chain tab redesign
+- Same data, laid out like the other tabs: bordered cards with one chart each, space between sections, detail tables folded into expanders. Watched wallets: KPI row, holdings by cohort (bars, BTC and ETH stacked), BTC held by category over time. Bitcoin flows: KPIs, cumulative net flow, net flow by entity (diverging bars; transaction sizes when one entity is picked), every transaction on a timeline (up/down triangles, log scale). Ethereum: KPIs, flows by entity (received vs sent), market-maker flows by counterparty, $1M+ transfers on a timeline. Hyperliquid cohorts: accounts and capital by cohort, this month's results (share in profit, median PnL), positioning by cohort with the net marked.
+- 27 Oct (fix): the Bybit and Binance liquidation websockets connected without a CA bundle; with Python from python.org on a Mac that fails certificate checks, so only the OKX poll was recording. They now use certifi (as every other source does through requests), and the hourly rec:liq_feeds log includes each feed's last error.

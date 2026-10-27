@@ -2,6 +2,9 @@
 metrics in src/catalog.py. Every chart goes through src/charts.render."""
 from __future__ import annotations
 
+import re
+from contextlib import contextmanager
+
 import pandas as pd
 import streamlit as st
 
@@ -17,9 +20,16 @@ CSS = f"""
 .st-key-gn-root label p {{ color: {charts.AXIS} !important; font-size: 12px; }}
 div[class*="st-key-gn-panel-"] {{ background: {charts.BG}; border: 1px solid {charts.BORDER}; border-radius: 8px;
     padding: 10px 12px 10px 12px; }}
-.gn-title {{ color: {charts.TEXT}; font-weight: 600; font-size: 14px; margin: 0; }}
+.gn-title {{ color: {charts.TEXT}; font-weight: 600; font-size: 14px; margin: 0; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; line-height: 20px; height: 20px; }}
 .gn-latest {{ color: {charts.TEXT}; font-size: 13px; float: right; font-variant-numeric: tabular-nums; }}
-.gn-meta {{ color: {charts.AXIS}; font-size: 11.5px; line-height: 1.4; margin: 2px 0 0 0; }}
+.gn-meta {{ color: {charts.AXIS}; font-size: 11.5px; line-height: 16px; margin: 2px 0 0 0; height: 48px; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }}
+/* single-chart view: no pairing, so the description can take the space it needs */
+.st-key-gn-single .gn-meta {{ height: auto; display: block; }}
+div[class*="st-key-gn-panel-"] [data-testid="stHorizontalBlock"]:first-child button[kind="tertiary"] {{ color: {charts.AXIS}; min-height: 0; padding: 0; }}
+.gn-card-meta {{ height: auto; min-height: 16px; display: block; margin-top: 4px; }}
+div[class*="st-key-gn-panel-"] [data-testid="stMetricLabel"] p {{ font-size: 12px; color: {charts.AXIS}; }}
 /* Streamlit gives every markdown block a -16px bottom margin; inside a panel that made the
    description spill past the panel's border. Reset it so text stays inside the pane. */
 div[class*="st-key-gn-panel-"] [data-testid="stMarkdownContainer"] {{ margin-bottom: 0 !important; }}
@@ -57,7 +67,7 @@ def _nonce(con) -> str:
 
 
 def controls(key: str, show_resolution: bool = True) -> charts.Opts:
-    c1, c2, c3, c4, c5 = st.columns([2.3, 1.7, 1.8, 1.2, 0.8])
+    c1, c2, c3, c4, c5 = st.columns([2.3, 1.7, 1.8, 1.2, 0.8], vertical_alignment="bottom")
     rng = c1.segmented_control("Range", list(charts.RANGES), default="1Y", key=f"{key}-rng")
     scale = c2.segmented_control("Scale", ["Default", "Lin", "Log"], default="Default", key=f"{key}-scale")
     ma = c3.segmented_control("Moving avg", list(charts.MAS), default="None", key=f"{key}-ma")
@@ -70,14 +80,15 @@ def controls(key: str, show_resolution: bool = True) -> charts.Opts:
 def panel(con, spec: charts.Spec, opts: charts.Opts, nonce: str, key: str) -> None:
     with st.container(key=f"gn-panel-{key}"):
         try:
-            data = _data(spec.id, con, nonce)
+            data = charts._frame(_data(spec.id, con, nonce), spec.title)   # dates restored, see charts._frame
             many = isinstance(data, pd.DataFrame) and spec.kind == "multi" and data.shape[1] > 4
             latest = charts.latest_value(data, spec.unit, spec.kind) \
                 if isinstance(getattr(data, "index", None), pd.DatetimeIndex) and spec.kind not in ("heatmap", "xy", "overlay") and not many else ""
-            st.markdown(f'<p class="gn-title">{spec.title}<span class="gn-latest">{latest}</span></p>', unsafe_allow_html=True)
+            st.markdown(f'<p class="gn-title" title="{spec.title}"><span class="gn-latest">{latest}</span>{spec.title}</p>',
+                        unsafe_allow_html=True)
             fig = charts.render(spec, data, _price(con, nonce), opts)
         except Exception as e:  # noqa: BLE001 - one broken chart must not blank the dashboard
-            st.markdown(f'<p class="gn-title">{spec.title}</p>', unsafe_allow_html=True)
+            st.markdown(f'<p class="gn-title" title="{spec.title}">{spec.title}</p>', unsafe_allow_html=True)
             fig = charts.empty_figure(opts.height, "Not available yet")
             spec_err = f"{type(e).__name__}: {e}"
         else:
@@ -88,8 +99,60 @@ def panel(con, spec: charts.Spec, opts: charts.Opts, nonce: str, key: str) -> No
             meta += f' · <span class="gn-partial">Partial: {spec.partial}</span>'
         if spec_err:
             meta += f' · <span class="gn-partial">{spec_err[:160]}</span>'
-        st.markdown(f'<div class="gn-meta">{meta}</div>', unsafe_allow_html=True)
+        plain = re.sub(r"<[^>]+>", "", meta).replace('"', "'")
+        st.markdown(f'<div class="gn-meta" title="{plain}">{meta}</div>', unsafe_allow_html=True)
         explain(spec)
+
+
+class _CardBody:
+    """Handle yielded by card(): .chart() draws a chart and remembers it for
+    the card's full-screen button."""
+
+    def __init__(self):
+        self.fig = None
+
+    def chart(self, fig, **kw) -> None:
+        self.fig = fig
+        st.plotly_chart(fig, **kw)
+
+
+def _fullscreen(fig, title: str) -> None:
+    import plotly.graph_objects as go
+
+    def body():
+        big = go.Figure(fig)
+        big.update_layout(height=680)
+        st.plotly_chart(big, width="stretch", config={"displayModeBar": False, "scrollZoom": True})
+    st.dialog(title, width="large")(body)()
+
+
+@contextmanager
+def card(key: str, title: str, desc: str = "", source: str = "", latest: str = "", paired: bool = False,
+         expandable: bool = False):
+    """A bordered card like a Studio chart panel, for content outside Studio:
+    title on top, then the body (a chart, table or metrics), then the
+    description and source underneath. Paired cards (side by side) clamp the
+    description to 3 lines, as Studio does, so both cards end at the same height.
+    expandable: a full-screen button in the title row for the chart drawn with
+    the yielded handle's .chart()."""
+    with st.container(key=f"gn-panel-{key}"):
+        title_html = f'<p class="gn-title" title="{title}"><span class="gn-latest">{latest}</span>{title}</p>'
+        if expandable:
+            tc, bc = st.columns([20, 1], vertical_alignment="center", gap="small")
+            tc.markdown(title_html, unsafe_allow_html=True)
+            slot = bc.empty()
+        else:
+            st.markdown(title_html, unsafe_allow_html=True)
+        h = _CardBody()
+        yield h
+        if expandable and h.fig is not None:
+            if slot.button("", icon=":material/open_in_full:", key=f"fs-{key}", help="Full screen", type="tertiary"):
+                _fullscreen(h.fig, title)
+        meta = " · ".join(x for x in (desc, f"Source: {source}" if source else "") if x)
+        if meta:
+            plain = re.sub(r"<[^>]+>", "", meta).replace('"', "'")
+            cls = "gn-meta" if paired else "gn-meta gn-card-meta"
+            st.markdown(f'<div class="{cls}" title="{plain}">{meta}</div>', unsafe_allow_html=True)
 
 
 def explain(spec: charts.Spec) -> None:
@@ -97,7 +160,7 @@ def explain(spec: charts.Spec) -> None:
     calc, read = explanations.E.get(spec.id, ("", ""))
     if not (calc or read):
         return
-    data = f"Source: {spec.source}."
+    data = (f"{spec.desc} " if spec.desc else "") + f"Source: {spec.source}."
     if spec.partial:
         data += f" Limitation: {spec.partial}"
     body = "".join(f"<h6>{h}</h6><div>{t}</div>" for h, t in
@@ -182,6 +245,72 @@ def social_extras(con, cfg: dict) -> None:
                     st.success(f"Saved {value:,.0f} for {label.strip()} on {when}")
 
 
+# --------------------------------------------------------------------------- #
+# Search: every dashboard and every chart by name. Streamlit's select box
+# filters its options as you type, which gives the autocomplete.
+# --------------------------------------------------------------------------- #
+
+def _search_index() -> dict[str, tuple[str, str, str, str]]:
+    """key -> (label shown, kind, group, name-or-chart-id)."""
+    idx: dict[str, tuple[str, str, str, str]] = {}
+    for g, n, _ in catalog.DASHBOARDS:
+        idx[f"d:{g}:{n}"] = (n, "dashboard", g, n)
+    first_group: dict[str, str] = {}
+    for g, _, lst in catalog.DASHBOARDS:
+        for sid in lst:
+            first_group.setdefault(sid, g)
+    for spec in sorted(catalog.SPECS, key=lambda x: x.title.lower()):
+        idx[f"c:{spec.id}"] = (spec.title, "chart", first_group.get(spec.id, ""), spec.id)
+    return idx
+
+
+SEARCH = _search_index()
+
+
+def _go_to_search() -> None:
+    """Runs before the rerun: point the view's own controls at the pick, then clear the box."""
+    key = st.session_state.get("gn-search")
+    if not key or key not in SEARCH:
+        return
+    _, kind, group, target = SEARCH[key]
+    if kind == "dashboard":
+        st.session_state["gn-mode"] = "Dashboards"
+        st.session_state["gn-group"] = group
+        st.session_state["gn-dash"] = target
+    else:
+        st.session_state["gn-mode"] = "Charts"
+        st.session_state["gn-cgroup"] = group
+        st.session_state["gn-metric"] = target
+    st.session_state["gn-search"] = None
+    st.session_state["main-tabs"] = "Studio"          # open the Studio tab
+
+
+SEARCH_CSS = """
+<style>
+/* Zero-height holder just above the tab bar; the box floats at the bar's right end,
+   a little above the tab underline. */
+.st-key-global-search { position: relative; height: 0; min-height: 0; z-index: 20; margin: 0; padding: 0; gap: 0; }
+.st-key-global-search > div { position: absolute; right: 0; top: 19px; width: min(280px, 36vw); }
+.st-key-global-search [role="group"] { min-height: 30px; height: 30px; border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: none; }
+.st-key-global-search [role="group"]:focus-within { border-color: rgba(247, 147, 26, 0.6); }
+.st-key-global-search input { font-size: 13px; }
+.st-key-global-search input::placeholder { color: rgba(247, 248, 250, 0.35); opacity: 1; }
+.st-key-global-search button svg { opacity: 0.35; }
+@media (max-width: 900px) { .st-key-global-search { height: auto; } .st-key-global-search > div { position: static; width: 100%; } }
+</style>
+"""
+
+
+def global_search() -> None:
+    """Search box at the right end of the main tab bar (call just before st.tabs)."""
+    st.markdown(SEARCH_CSS, unsafe_allow_html=True)
+    with st.container(key="global-search"):
+        st.selectbox("Search", list(SEARCH), index=None, key="gn-search", on_change=_go_to_search,
+                     placeholder="Search", label_visibility="collapsed",
+                     format_func=lambda k: SEARCH[k][0])
+
+
 def render(con, cfg: dict | None = None) -> None:
     if cfg is None:
         from .config import load_config
@@ -199,11 +328,14 @@ def render(con, cfg: dict | None = None) -> None:
             name = b.selectbox("Dashboard", names, key="gn-dash")
             ids = next(lst for g, n, lst in catalog.DASHBOARDS if g == group and n == name)
             opts = controls("gn-d")
-            opts.height = 300
-            cols = st.columns(2)
-            for i, sid in enumerate(ids):
-                with cols[i % 2]:
-                    panel(con, catalog.BY_ID[sid], opts, nonce, f"{group}-{name}-{sid}")
+            opts.height = 330
+            # One row of two panels at a time, so each pair starts at the same height
+            # (stacking two independent columns lets small height differences add up).
+            for r in range(0, len(ids), 2):
+                cols = st.columns(2)
+                for j, sid in enumerate(ids[r:r + 2]):
+                    with cols[j]:
+                        panel(con, catalog.BY_ID[sid], opts, nonce, f"{group}-{name}-{sid}")
             if name == "Social Risk":
                 try:
                     social_extras(con, cfg)
@@ -221,4 +353,5 @@ def render(con, cfg: dict | None = None) -> None:
             sid = b.selectbox("Metric", by_group[group], format_func=lambda x: catalog.BY_ID[x].title, key="gn-metric")
             opts = controls("gn-c")
             opts.height = 520
-            panel(con, catalog.BY_ID[sid], opts, nonce, f"chart-{sid}")
+            with st.container(key="gn-single"):
+                panel(con, catalog.BY_ID[sid], opts, nonce, f"chart-{sid}")

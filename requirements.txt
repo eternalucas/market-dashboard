@@ -6,3 +6,4 @@ pyyaml>=6.0
 pytrends>=4.9
 yfinance>=0.2.50
 pytest>=8.0
+websocket-client>=1.7

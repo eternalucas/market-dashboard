@@ -156,3 +156,41 @@ def correlation(c: Ctx, other: pd.Series, window: int = 90) -> pd.Series:
     b.index = b.index.normalize()
     a, b = a.align(b, join="inner")
     return a.rolling(window, min_periods=window // 2).corr(b)
+
+
+# --------------------------------------------------------------------------- #
+# Tokenized equities (on-chain DEX volume, see sources/tokenized_stocks.py)
+# --------------------------------------------------------------------------- #
+
+def _tsv(c: Ctx, key: str) -> pd.DataFrame:
+    d = {k.split(":", 2)[2]: v for k, v in c.prefix(f"tsv:{key}:").items()}
+    return pd.DataFrame(d).sort_index().fillna(0.0) if d else pd.DataFrame()
+
+
+def tokenized_volume_by_issuer(c: Ctx) -> pd.DataFrame:
+    """Daily on-chain spot DEX volume of tokenized equities [USD], by token issuer."""
+    return _tsv(c, "issuer")
+
+
+def tokenized_share_by_issuer(c: Ctx) -> pd.DataFrame:
+    """Each issuer's share of the day's tokenized-equity DEX volume [%]."""
+    df = _tsv(c, "issuer")
+    return df.div(df.sum(axis=1).replace(0, float("nan")), axis=0).mul(100).dropna(how="all")
+
+
+CHAIN_NAMES = {"eth": "Ethereum", "bsc": "BNB Chain", "solana": "Solana", "arbitrum": "Arbitrum", "base": "Base",
+               "robinhood": "Robinhood Chain", "ink": "Ink", "plume-network": "Plume", "polygon_pos": "Polygon",
+               "mantle": "Mantle", "avax": "Avalanche", "hyperevm": "HyperEVM"}
+
+
+def tokenized_volume_by_chain(c: Ctx) -> pd.DataFrame:
+    return _tsv(c, "chain").rename(columns=lambda n: CHAIN_NAMES.get(n, n))
+
+
+def tokenized_share_by_chain(c: Ctx) -> pd.DataFrame:
+    df = tokenized_volume_by_chain(c)
+    return df.div(df.sum(axis=1).replace(0, float("nan")), axis=0).mul(100).dropna(how="all")
+
+
+def tokenized_total(c: Ctx) -> pd.Series:
+    return c.s("tsv:total")

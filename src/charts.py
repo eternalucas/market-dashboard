@@ -26,6 +26,7 @@ PRICE = "rgba(247,248,250,0.85)"
 ACCENT = "#f7931a"            # bitcoin orange: the default metric colour
 POS, NEG = "#2fbf71", "#e5484d"
 FONT = "Inter, 'Helvetica Neue', system-ui, -apple-system, sans-serif"
+LEGEND_SIZE = 12.5   # between the chart description (11.5px) and the chart title (14px)
 # categorical palette for multi-series / stacked charts (ordered for contrast on dark)
 PALETTE = ["#f7931a", "#4c8dff", "#2fbf71", "#e5484d", "#b07cff", "#18c6c6", "#f2c94c", "#ff7ab6",
            "#9aa4b2", "#ff9f43", "#7bd88f", "#6c7cff"]
@@ -86,6 +87,8 @@ def fmt(v: float, unit: str) -> str:
         return f"{v * 100:,.2f}%"
     if unit == "bps":
         return f"{v:,.2f} bps"
+    if unit == "count" and a < 1000:
+        return f"{v:,.0f}"
     if unit == "hs":
         return f"{v / 1e18:,.1f} EH/s"
     if unit == "ratio":
@@ -106,9 +109,14 @@ SUFFIX = {"pct": "%", "btc": " BTC", "hs": "H/s"}
 def _frame(data, name: str = "value") -> pd.DataFrame:
     if data is None:
         return pd.DataFrame()
-    if isinstance(data, pd.Series):
-        return data.to_frame(name)
-    return data
+    df = data.to_frame(name) if isinstance(data, pd.Series) else data
+    # A frame built from several series where one is empty gets a plain object index of
+    # timestamps; turn it back into dates so ranges, price overlay and resampling work.
+    if not isinstance(df.index, pd.DatetimeIndex) and df.index.dtype == object and len(df.index) \
+            and all(isinstance(x, pd.Timestamp) for x in df.index[:50]):
+        df = df.copy()
+        df.index = pd.DatetimeIndex(df.index)
+    return df
 
 
 def window(df: pd.DataFrame, opts: Opts) -> pd.DataFrame:
@@ -139,24 +147,30 @@ def resample(df: pd.DataFrame, opts: Opts, spec: Spec) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- figure
+MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 62, 62, 72, 30
+
+
 def base_layout(fig: go.Figure, height: int, log: bool, unit: str, has_price: bool) -> go.Figure:
     fig.update_layout(
-        height=height, paper_bgcolor=BG, plot_bgcolor=BG, margin=dict(l=8, r=8 if not has_price else 4, t=34, b=8),
+        # Fixed margins (no auto-margins): every panel's plot area has the same size and position,
+        # with or without a legend or a price axis, so charts side by side line up exactly.
+        height=height, paper_bgcolor=BG, plot_bgcolor=BG, margin=dict(l=MARGIN_L, r=MARGIN_R, t=MARGIN_T, b=MARGIN_B, autoexpand=False),
         font=dict(family=FONT, size=11, color=AXIS), hovermode="x unified",
         hoverlabel=dict(bgcolor=PANEL, bordercolor=BORDER, font=dict(family=FONT, size=12, color=TEXT)),
-        legend=dict(orientation="h", x=0, y=1.0, yanchor="bottom", xanchor="left", font=dict(size=11, color=TEXT),
+        legend=dict(orientation="h", x=0, xref="paper", y=1.0, yref="container", yanchor="top", xanchor="left",
+                    font=dict(size=LEGEND_SIZE, color=TEXT), valign="middle",
                     bgcolor="rgba(0,0,0,0)", itemsizing="constant", entrywidth=0, entrywidthmode="pixels",
                     tracegroupgap=0),
         bargap=0.05, barmode="relative",
     )
-    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS), showspikes=True,
+    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS), showspikes=True, automargin=False,
                      spikemode="across", spikesnap="cursor", spikecolor="rgba(247,248,250,0.35)", spikethickness=1,
                      spikedash="solid")
-    fig.update_yaxes(gridcolor=GRID, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS), side="left",
+    fig.update_yaxes(gridcolor=GRID, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS), side="left", automargin=False,
                      tickformat=TICK.get(unit, ""), exponentformat="B", tickprefix=PREFIX.get(unit, ""),
                      ticksuffix="%" if unit == "pct" else "", type="log" if log else "linear")
     if has_price:
-        fig.update_layout(yaxis2=dict(overlaying="y", side="right", type="log", showgrid=False, zeroline=False,
+        fig.update_layout(yaxis2=dict(overlaying="y", side="right", type="log", showgrid=False, zeroline=False, automargin=False,
                                       tickfont=dict(color=AXIS), tickprefix="$", tickformat=".3~s", linecolor=BORDER))
     return fig
 
@@ -243,6 +257,10 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
         p = price[(price.index >= df.index.min()) & (price.index <= df.index.max())]
         fig.add_trace(go.Scatter(x=p.index, y=p, name="BTC Price [USD]", yaxis="y2", mode="lines",
                                  line=dict(width=1, color=PRICE), hovertemplate="$%{y:,.0f}<extra>Price</extra>"))
+    if len(df.columns) == 1 and k not in ("heatmap", "bars_pn", "area_pn"):
+        for tr_ in fig.data:
+            if getattr(tr_, "yaxis", None) != "y2":
+                tr_.showlegend = False            # the panel title names it; keeps every legend to one line
     fig = base_layout(fig, opts.height, log, spec.unit, show_price)
     if log and k not in ("heatmap",):
         vals = df.select_dtypes("number").to_numpy(dtype=float)
@@ -267,12 +285,39 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
                                               dict(dtickrange=[2.6e9, 3.2e10], value="%b %Y"),
                                               dict(dtickrange=[3.2e10, None], value="%Y")])
     if spec.xlabel:
-        fig.update_xaxes(title=dict(text=spec.xlabel, font=dict(size=11, color=AXIS)))
+        # axis title as a label inside the plot's bottom-right corner, so this chart keeps the
+        # same plot area as its neighbours
+        fig.add_annotation(text=spec.xlabel, xref="paper", yref="paper", x=1, y=0, xanchor="right", yanchor="bottom",
+                           showarrow=False, font=dict(size=10, color=AXIS), bgcolor="rgba(26,26,26,0.7)")
     return fig
 
 
 DIVERGING = [[0.0, "#e5484d"], [0.5, "#1a1a1a"], [1.0, "#2fbf71"]]
 HEAT = [[0.0, "#1a1a1a"], [0.15, "#2d1b4e"], [0.4, "#6b2fa0"], [0.7, "#f7931a"], [1.0, "#fff4d6"]]
+
+
+def fixed_layout(fig: go.Figure, height: int, right: int = 24) -> go.Figure:
+    """Layout for the charts outside Studio (Positioning, On-chain, Macro events,
+    Trade review): fixed margins and no auto-margins, so two charts placed
+    side by side have plot areas of the same size and position."""
+    fig.update_layout(height=height, margin=dict(l=72, r=right, t=46, b=40), hovermode="x unified",
+                      legend=dict(orientation="h", x=0, xref="paper", y=1.0, yref="container",
+                                  yanchor="top", xanchor="left", font=dict(size=LEGEND_SIZE)))
+    fig.update_xaxes(automargin=False)
+    fig.update_yaxes(automargin=False, title_standoff=8)
+    return fig
+
+
+def card_layout(fig: go.Figure, height: int, right: int = 24) -> go.Figure:
+    """fixed_layout plus the Studio look (background, fonts, grid, hover), for
+    charts drawn inside a bordered card outside Studio (e.g. Positioning)."""
+    fixed_layout(fig, height, right)
+    fig.update_layout(paper_bgcolor=BG, plot_bgcolor=BG, font=dict(family=FONT, size=11, color=AXIS),
+                      hoverlabel=dict(bgcolor=PANEL, bordercolor=BORDER, font=dict(family=FONT, size=12, color=TEXT)),
+                      legend=dict(font=dict(size=LEGEND_SIZE, color=TEXT), bgcolor="rgba(0,0,0,0)"))
+    fig.update_xaxes(showgrid=False, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS))
+    fig.update_yaxes(gridcolor=GRID, zeroline=False, linecolor=BORDER, tickfont=dict(color=AXIS))
+    return fig
 
 
 def empty_figure(height: int, text: str) -> go.Figure:
@@ -288,5 +333,8 @@ def latest_value(data, unit: str, kind: str = "line") -> str:
     df = _frame(data)
     if df.empty:
         return "-"
-    s = df.sum(axis=1, min_count=1).dropna() if kind == "stacked" else df.iloc[:, 0].dropna()
+    if kind == "bars" and df.shape[1] > 1 and unit in ("pct", "frac_pct"):
+        return ""                                  # shares of a total: no single headline number
+    stacked = kind == "stacked" or (kind == "bars" and df.shape[1] > 1)
+    s = df.sum(axis=1, min_count=1).dropna() if stacked else df.iloc[:, 0].dropna()
     return fmt(float(s.iloc[-1]), unit) if not s.empty else "-"
