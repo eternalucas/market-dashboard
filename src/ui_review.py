@@ -28,6 +28,8 @@ WINDOW_LABELS = {"7d": "7 days", "30d": "30 days", "90d": "90 days", "all": "All
 def money(x, dp=0):
     if x is None or (isinstance(x, float) and not np.isfinite(x)) or pd.isna(x):
         return "n/a"
+    if round(abs(x), dp) == 0:
+        x = 0.0
     return f"{'-' if x < 0 else ''}${abs(x):,.{dp}f}"
 
 
@@ -268,14 +270,23 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
     snaps = store.load(rcon, "tr_account_snapshots", "hyperliquid", addr)
     acct_now = float(snaps.sort_values("ts")["account_value"].iloc[-1]) if not snaps.empty else np.nan
     st.markdown(f"Trader: `{addr}` ([view on Hyperliquid](https://app.hyperliquid.xyz/explorer/address/{addr}))")
-    render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now, _positions(addr),
-                  note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net). "
-                       "Simulated results are never shown on this page; Backtest & Improve arrives in Phase 3.")
-    render_data_quality(fills, funding, trips, rep, sync)
+    view = st.segmented_control("Trader view", ["Review", "Diagnosis", "Data quality"], default="Review",
+                                key="tr-view", label_visibility="collapsed") or "Review"
+    if view == "Review":
+        render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now, _positions(addr),
+                      note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net). "
+                           "Simulated results are never shown on this page; Backtest & Improve arrives in Phase 3.")
+    elif view == "Diagnosis":
+        from . import ui_diagnosis
+        ui_diagnosis.render(rcon, addr, trips)
+    else:
+        from . import ui_diagnosis
+        render_data_quality(fills, funding, trips, rep, sync, ui_diagnosis.result(rcon, addr, trips))
 
 
-def render_data_quality(fills, funding, trips, rep, sync) -> None:
-    with st.expander("Data quality", expanded=bool(sync.get("history_truncated") or rep.get("position_gaps"))):
+def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = None) -> None:
+    from . import ui_diagnosis
+    with st.container():
         cov = sync.get("volume_coverage")
         rows = [
             ("Fills stored", f"{len(fills):,}", "Hyperliquid's free API keeps the 10,000 most recent per wallet."),
@@ -292,9 +303,14 @@ def render_data_quality(fills, funding, trips, rep, sync) -> None:
              f"{rep['unattributed_funding_n']} ({money(rep['unattributed_funding_usd'])}) outside any reconstructed trip."),
             ("Liquidations (as the liquidated account)", f"{rep['liquidations']:,}", ""),
             ("Spot fills skipped", f"{rep['spot_fills_skipped']:,}", "This review covers perps only."),
-            ("Order-book history", "Not available", "No free historical book: slippage vs mid is not measured yet."),
+            ("Order-book history", "Not available",
+             "No free historical book: slippage is a proxy (taker fill vs the previous 1-minute close)."),
         ]
-        st.dataframe(pd.DataFrame(rows, columns=["Check", "Value", "Note"]), hide_index=True, width="stretch")
+        if diag:
+            rows += ui_diagnosis.quality_rows(diag)
+        else:
+            rows.append(("Market data behind the diagnosis", "Not loaded yet", "Opening the Diagnosis view loads it."))
+        st.table(pd.DataFrame(rows, columns=["Check", "Value", "Note"]).set_index("Check"))
         if rep.get("position_gaps"):
             st.caption("Positions that changed without a fill (trips ending here are left out of the statistics):")
             st.dataframe(pd.DataFrame(rep["position_gaps"]).rename(columns={
