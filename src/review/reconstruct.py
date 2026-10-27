@@ -23,7 +23,7 @@ from ..venues.hyperliquid import is_perp
 
 TRIP_COLS = ["trip_id", "coin", "side", "open_ts", "close_ts", "entry_qty", "entry_notional", "exit_qty",
              "exit_notional", "max_qty", "realized_pnl", "fees", "funding", "fills", "taker_fills", "adds",
-             "added_while_losing", "liquidated", "is_open", "exit_unobserved"]
+             "added_while_losing", "liquidated", "is_open", "exit_unobserved", "first_px"]
 
 
 def _tol(x: float) -> float:
@@ -39,7 +39,8 @@ def _new_trip(coin: str, row, qty: float, fee: float, ts) -> dict:
             "open_ts": ts, "close_ts": pd.NaT, "entry_qty": qty, "entry_notional": qty * row.px,
             "exit_qty": 0.0, "exit_notional": 0.0, "max_qty": qty, "realized_pnl": 0.0, "fees": fee,
             "funding": 0.0, "fills": 1, "taker_fills": int(row.is_taker), "adds": 0,
-            "added_while_losing": False, "liquidated": False, "is_open": True, "exit_unobserved": False}
+            "added_while_losing": False, "liquidated": False, "is_open": True, "exit_unobserved": False,
+            "first_px": row.px}
 
 
 def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None) -> tuple[pd.DataFrame, dict]:
