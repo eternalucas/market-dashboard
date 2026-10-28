@@ -45,12 +45,19 @@ def _layout(fig, height=360):
     return card_layout(fig, height)
 
 
-def _card(key, title, desc, paired=False, expandable=True, source="Simulated from Hyperliquid fills, funding and candles"):
+VENUE_LABEL = "Hyperliquid"
+
+
+def _card(key, title, desc, paired=False, expandable=True, source=None):
     from .ui_studio import card
+    source = source or f"Simulated from {VENUE_LABEL} fills, funding and candles"
     return card(key, title, desc=desc, source=source, paired=paired, expandable=expandable)
 
 
-def render(rcon, addr: str, n_closed: int, own_fees: dict, diag: dict | None) -> None:
+def render(rcon, addr: str, n_closed: int, own_fees: dict, diag: dict | None, venue: str = "hyperliquid") -> None:
+    global VENUE_LABEL
+    from . import venues
+    VENUE_LABEL = venues.LABELS.get(venue, venue)
     st.markdown(f"{BADGE}&nbsp; Every number on this view is a simulation: the trader's real entries replayed on "
                 "historical prices with one thing changed. Parameters are chosen on the first 70% of trips and "
                 "results are shown on the last 30% (out of sample) first.", unsafe_allow_html=True)
@@ -59,20 +66,20 @@ def render(rcon, addr: str, n_closed: int, own_fees: dict, diag: dict | None) ->
                 "improvement is claimed. The Diagnosis view still applies.")
         return
     a, window = _assumptions(own_fees)
-    rid = jobs.run_id("hyperliquid", addr, window, a, store.data_version(rcon, "hyperliquid", addr))
+    rid = jobs.run_id(venue, addr, window, a, store.data_version(rcon, venue, addr))
     run = jobs.get(rcon, rid)
     c1, c2 = st.columns([1, 3], vertical_alignment="center")
     go_ = c1.button("Run backtest", type="primary", width="stretch", key="bt-run",
                     disabled=bool(run and run["status"] == "running"))
     if run is None:
-        prev = jobs.latest(rcon, "hyperliquid", addr)
+        prev = jobs.latest(rcon, venue, addr)
         c2.caption("Not run yet with these assumptions." + (
             " Showing the last finished run (different assumptions or older data) below." if prev else ""))
     elif run["status"] == "done":
         c2.caption(f"Cached result from {pd.Timestamp(run['finished']):%d %b %H:%M} UTC for these assumptions and "
                    "this data. It reruns automatically when new fills are synced or an assumption changes.")
     if go_:
-        jobs.start("hyperliquid", addr, window, a)
+        jobs.start(venue, addr, window, a)
         st.session_state["_bt_poll"] = rid
         st.rerun()
     if run and run["status"] == "running":
@@ -81,7 +88,7 @@ def render(rcon, addr: str, n_closed: int, own_fees: dict, diag: dict | None) ->
     if run and run["status"] == "error":
         st.error(f"The backtest stopped: {run['message']}")
         return
-    shown = run if (run and run["status"] == "done") else jobs.latest(rcon, "hyperliquid", addr)
+    shown = run if (run and run["status"] == "done") else jobs.latest(rcon, venue, addr)
     if not shown or not shown.get("result"):
         st.caption("Click **Run backtest**. A full run takes from a few seconds to a few minutes (prices are "
                    "loaded the first time).")
@@ -230,14 +237,14 @@ def _plan(r: dict, diag: dict | None) -> None:
     left, mid, right = st.columns(3)
     with left:
         with _card("bt-right", "Right: keep doing", "From the Diagnosis of the same trips (actual trades).",
-                   paired=True, expandable=False, source="Hyperliquid (actual fills and funding)") as cc:
+                   paired=True, expandable=False, source=f"{VENUE_LABEL} (actual fills and funding)") as cc:
             s = r.get("right") or (diag or {}).get("strengths") or []
             st.markdown(_md("\n".join(f"- **{x['title']}.** {x['evidence']}" for x in s[:5])) if s else
                         "Nothing stands out with enough evidence.")
             cc.fig = None
     with mid:
         with _card("bt-wrong", "Wrong: recurring mistakes", "From the Diagnosis of the same trips (actual trades).",
-                   paired=True, expandable=False, source="Hyperliquid (actual fills and funding)") as cc:
+                   paired=True, expandable=False, source=f"{VENUE_LABEL} (actual fills and funding)") as cc:
             e = r.get("wrong")
             if e is None:
                 d = (diag or {}).get("errors")

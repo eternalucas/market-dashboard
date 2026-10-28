@@ -64,7 +64,7 @@ class Hyperliquid(VenueAdapter):
         return data
 
     # ------------------------------------------------------------ leaderboard
-    def leaderboard(self) -> pd.DataFrame:
+    def leaderboard(self, con=None) -> pd.DataFrame:
         def call():
             r = self.session.get(STATS_LEADERBOARD, timeout=60)
             r.raise_for_status()

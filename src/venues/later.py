@@ -9,10 +9,6 @@ class _Unchecked(VenueAdapter):
     caps = Capabilities(notes={"all": "Not checked yet (see docs/venues.md)"})
 
 
-class Lighter(_Unchecked):
-    name, label = "lighter", "Lighter"
-
-
 class Paradex(_Unchecked):
     name, label = "paradex", "Paradex"
 

@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS tr_candidates (         -- who the venue's own leader
     source_windows TEXT, venue_pnl_json TEXT, account_value REAL,
     PRIMARY KEY (venue, account_id)
 );
+CREATE TABLE IF NOT EXISTS tr_seen (              -- accounts seen in a venue's public trades (Lighter discovery)
+    venue TEXT NOT NULL, account_id TEXT NOT NULL, notional REAL, trades INTEGER, first_seen TEXT, last_seen TEXT,
+    PRIMARY KEY (venue, account_id)
+);
 CREATE TABLE IF NOT EXISTS tr_backtest_runs (
     run_id TEXT PRIMARY KEY, venue TEXT, account_id TEXT, window TEXT, config_hash TEXT, data_version TEXT,
     status TEXT, progress REAL, message TEXT, started TEXT, finished TEXT, result_json TEXT

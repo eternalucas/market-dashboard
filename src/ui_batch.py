@@ -13,6 +13,7 @@ from .review import costs as cst
 
 GREEN, RED, BLUE, GREY = "#2fbf71", "#e5484d", "#2a78d6", "#8a8f98"
 CHART_CFG = {"displayModeBar": False}
+LABEL = "Hyperliquid"
 BADGE = ('<span style="background:#3a2a5c;color:#cbb6ff;border:1px solid #6b4fb3;border-radius:4px;'
          'padding:1px 7px;font-size:12px;font-weight:600;letter-spacing:.04em">SIMULATED</span>')
 
@@ -31,21 +32,27 @@ def _card(key, title, desc, source, paired=True, expandable=True):
     return card(key, title, desc=desc, source=source, paired=paired, expandable=expandable)
 
 
-def _latest(rcon):
-    r = rcon.execute("SELECT run_id FROM tr_backtest_runs WHERE account_id='*' ORDER BY started DESC LIMIT 1").fetchone()
+def _latest(rcon, venue):
+    r = rcon.execute("SELECT run_id FROM tr_backtest_runs WHERE account_id='*' AND venue=? ORDER BY started DESC LIMIT 1",
+                     (venue,)).fetchone()
     return (r[0], jobs.get(rcon, r[0])) if r else (None, None)
 
 
 def render(rcon, el) -> None:
+    from . import venues
+    global LABEL
     st.subheader("Across the Top 100")
     st.caption("The backtest from each trader's page, run on every trader on the 30-day board, then summarised: "
                "which mistakes are most common among top traders, which rules would have helped most often "
                "(simulated, out of sample), and whether last month's top traders stayed on top.")
-    bid, run = _latest(rcon)
+    venue = st.segmented_control("Venue", list(venues.VENUES), default="hyperliquid", key="batch-venue",
+                                 format_func=lambda v: venues.LABELS.get(v, v)) or "hyperliquid"
+    LABEL = venues.LABELS.get(venue, venue)
+    bid, run = _latest(rcon, venue)
     c1, c2 = st.columns([1, 3], vertical_alignment="center")
     running = bool(run and run["status"] == "running")
     if c1.button("Run on the Top 100", type="primary", disabled=running, width="stretch", key="batch-run"):
-        batch.start("hyperliquid", "30d", cst.Assumptions(), el)
+        batch.start(venue, "30d", cst.Assumptions(), el)
         st.rerun()
     if running:
         c2.caption("Running in the background; you can leave this page. A first run takes about 30-90 minutes "
@@ -58,8 +65,8 @@ def render(rcon, el) -> None:
         c2.error(f"The last run stopped: {run['message']}")
     done = run if run and run["status"] == "done" else None
     if not done:
-        prev = rcon.execute("SELECT run_id FROM tr_backtest_runs WHERE account_id='*' AND status='done' "
-                            "ORDER BY finished DESC LIMIT 1").fetchone()
+        prev = rcon.execute("SELECT run_id FROM tr_backtest_runs WHERE account_id='*' AND status='done' AND venue=? "
+                            "ORDER BY finished DESC LIMIT 1", (venue,)).fetchone()
         done = jobs.get(rcon, prev[0]) if prev else None
     if not done or not done.get("result"):
         if not running:
@@ -103,7 +110,7 @@ def _results(r: dict) -> None:
         with _card("bt-batch-mistakes", "Most common mistakes among top traders",
                    "Share of backtested traders whose actual trades show each recurring mistake (one count per "
                    "trader). Hover for the combined P&L of the flagged trades.",
-                   "Hyperliquid fills and funding (actual trades)") as cc:
+                   f"{LABEL} fills and funding (actual trades)") as cc:
             mk = pd.DataFrame(r["mistakes"]).head(10)
             f = go.Figure()
             if len(mk):
@@ -119,7 +126,7 @@ def _results(r: dict) -> None:
         with _card("bt-batch-rules", "Rules that helped most often (simulated)",
                    "For each rule family: share of backtested traders for whom it was adopted on the training "
                    "window and also improved the test window (bright green = Medium/High confidence, faded = low). Hover for "
-                   "the median out-of-sample change.", "Simulated from Hyperliquid fills, funding and candles") as cc:
+                   "the median out-of-sample change.", f"Simulated from {LABEL} fills, funding and candles") as cc:
             ru = pd.DataFrame(r["rules"]).head(12)
             f = go.Figure()
             if len(ru):
@@ -140,7 +147,7 @@ def _results(r: dict) -> None:
     with a:
         with _card("bt-batch-right", "What top traders do right",
                    "Share of backtested traders showing each strength in their actual trades.",
-                   "Hyperliquid fills and funding (actual trades)") as cc:
+                   f"{LABEL} fills and funding (actual trades)") as cc:
             sk = pd.DataFrame(r["strengths"]).head(10)
             f = go.Figure()
             if len(sk):
@@ -154,7 +161,7 @@ def _results(r: dict) -> None:
         with _card("bt-batch-persist", "Do top traders stay on top?",
                    "Persistence test: every analysed account ranked by its P&L over the 30 days before the last 30; "
                    "the top 100 compared with the rest over the last 30 days.",
-                   "Hyperliquid fills and funding (actual trades)", expandable=False) as cc:
+                   f"{LABEL} fills and funding (actual trades)", expandable=False) as cc:
             if p.get("status") != "done":
                 st.caption("Not enough accounts whose stored history covers both windows yet.")
             else:
@@ -169,10 +176,10 @@ def _results(r: dict) -> None:
             cc.fig = None
     with st.expander(f"Every trader ({r['traders']})"):
         df = pd.DataFrame(r["per_trader"])
-        df["Trader"] = "?trader=" + df["account_id"]
+        df["Trader"] = "?trader=" + df["account_id"].astype(str) + "&venue=" + r.get("venue", "hyperliquid")
         st.dataframe(df[["Trader", "status", "trips", "actual_test", "golden_error", "best_rule", "best_gain",
                          "best_label", "mistakes"]], hide_index=True, width="stretch", column_config={
-            "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=(0x[0-9a-f]+)"),
+            "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=([0-9a-zx]+)"),
             "status": "Status", "trips": "Round trips",
             "actual_test": st.column_config.NumberColumn("Actual P&L, test window", format="$%,.0f"),
             "golden_error": st.column_config.NumberColumn("Replay error", format="percent"),

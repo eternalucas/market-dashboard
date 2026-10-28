@@ -319,31 +319,53 @@ class Recorder:
         self._cal_thread = threading.Thread(target=run, daemon=True, name="liq_calibrate")
         self._cal_thread.start()
 
-    def job_trade_leaderboard(self) -> None:
-        """Hourly: sync the Top 100 candidates that are due (each account at
-        most every 20 h), in its own thread and database (data/trades.db),
-        within a 55-minute budget so a first build spreads over a few runs."""
-        if getattr(self, "_tl_thread", None) and self._tl_thread.is_alive():
-            return
+    TRADE_VENUES = ("hyperliquid", "lighter", "gmx")
 
-        def run():
-            from .config import load_config
-            from .review import leaderboard as lbm
-            from .review import store as rstore
-            c = rstore.connect()
-            log = storage.connect()
-            try:
-                el = lbm.Eligibility.from_cfg(load_config())
-                res = lbm.refresh(c, "hyperliquid", budget_s=3300, say=lambda *_: None, el=el)
-                storage.log_fetch(log, "rec:trade_leaderboard", True, res["synced"],
-                                  f"pool {res['pool']}, synced {res['synced']}, skipped {res['skipped']}, {res['seconds']} s")
-            except Exception as e:  # noqa: BLE001
-                storage.log_fetch(log, "rec:trade_leaderboard", False, 0, f"{type(e).__name__}: {e}")
-            finally:
-                c.close()
-                log.close()
-        self._tl_thread = threading.Thread(target=run, daemon=True, name="trade_leaderboard")
-        self._tl_thread.start()
+    def job_trade_leaderboard(self) -> None:
+        """Hourly: sync each venue's Top 100 candidates that are due (each
+        account at most every 20 h), one thread per venue (each venue has its
+        own rate limit) in data/trades.db, within a 55-minute budget so a first
+        build spreads over a few runs."""
+        threads = getattr(self, "_tl_threads", {})
+        for venue in self.TRADE_VENUES:
+            if venue in threads and threads[venue].is_alive():
+                continue
+
+            def run(venue=venue):
+                from .config import load_config
+                from .review import leaderboard as lbm
+                from .review import store as rstore
+                c = rstore.connect()
+                log = storage.connect()
+                name = "rec:trade_leaderboard" + ("" if venue == "hyperliquid" else f":{venue}")
+                try:
+                    el = lbm.Eligibility.from_cfg(load_config())
+                    res = lbm.refresh(c, venue, budget_s=3300, say=lambda *_: None, el=el)
+                    storage.log_fetch(log, name, True, res["synced"],
+                                      f"pool {res['pool']}, synced {res['synced']}, skipped {res['skipped']}, "
+                                      f"{res['seconds']} s")
+                except Exception as e:  # noqa: BLE001
+                    storage.log_fetch(log, name, False, 0, f"{type(e).__name__}: {e}")
+                finally:
+                    c.close()
+                    log.close()
+            threads[venue] = threading.Thread(target=run, daemon=True, name=f"trade_leaderboard_{venue}")
+            threads[venue].start()
+        self._tl_threads = threads
+
+    def job_lighter_sample(self) -> None:
+        """Every 15 minutes: accounts in the latest trades of Lighter's most
+        traded markets (Lighter has no public P&L leaderboard)."""
+        from .review import leaderboard as lbm
+        from .review import store as rstore
+        c = rstore.connect()
+        try:
+            n = lbm.sample_accounts(c, "lighter", 25)
+            storage.log_fetch(self.con, "rec:lighter_sample", True, n, f"{n} accounts in the latest trades")
+        except Exception as e:  # noqa: BLE001
+            self.fail("rec:lighter_sample", e)
+        finally:
+            c.close()
 
     def job_option_metrics_catchup(self) -> None:
         from .metrics import options as om
@@ -362,7 +384,7 @@ class Recorder:
     # ------------------------------------------------------------------ #
     JOBS = [  # (name, every N seconds). Jobs that only start their own thread come first, so after a
         # restart they start at once instead of waiting for the slower jobs below.
-        ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("watched_wallets", 3600),
+        ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("lighter_sample", 900), ("watched_wallets", 3600),
         ("tokenized_stocks", 3600), ("sources", 3600), ("liq_calibrate", 86400),
         ("books", 60), ("futures_curve", 900), ("option_trades", 300), ("option_trades_backfill", 3600), ("option_chain", 3600),
         ("mempool", 600), ("ibit_chain", 900), ("lightning", 86400), ("option_metrics_catchup", 3600), ("housekeeping", 86400),

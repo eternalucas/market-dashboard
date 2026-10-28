@@ -140,6 +140,39 @@ Sources:
 
 ---
 
+## Phase 4 Step 0 (27 Oct 2026): other venues with open per-trader data
+
+Each venue's public API was called directly (no login) on 27 Oct 2026.
+
+| Venue | Find top traders? | Each trader's full history? | Funding paid/received? | Verdict |
+|---|---|---|---|---|
+| **Lighter** | No P&L leaderboard (points only, addresses hidden). Every public trade shows both account numbers, and each account's daily P&L is public | Yes: `trades?account_index=`, 100 a page, with position and entry cost before each trade and the fee rate | No (login needed): **estimated** from position x hourly rate | **Built** |
+| **GMX v2 (Arbitrum)** | Yes: `periodAccountStats` (GMX's own leaderboard data) | Yes: `tradeActions` with realised P&L, impact, fees and position size after each order | Paid funding is in each order's fees | **Built** |
+| dYdX v4 | No: no leaderboard, public trades don't show who traded | Yes if the address is known | Yes | Not built: no way to find top traders (~$41M a day) |
+| Drift | n/a | n/a | n/a | Exploited April 2026 (~$295M), relaunching as Velocity (private beta) |
+| Paradex, Aster, Extended, edgeX | No | No: per-account history needs the account's login | No | Not built (same reason as Nado and Variational) |
+
+**Lighter details.** Base `https://mainnet.zklighter.elliot.ai/api/v1/`; 60 requests a minute per IP for
+unauthenticated users (no weights). Endpoints used: `orderBooks`, `exchangeStats`, `recentTrades` (discovery),
+`trades` (per account, `sort_by=timestamp&sort_dir=desc`, cursor), `pnl` (daily cumulative trade P&L, volume,
+inflows and outflows; equity = inflow - outflow + every P&L line, checked against a live account's collateral),
+`account`, `candles` (500 a call), `fundings` (hourly; `rate` is a percentage, `direction` the paying side).
+`positionFunding` and `liquidations` need a login. Account positions in an account's own trades are signed;
+closed P&L = closed size x (price - entry cost / position) on the reducing part. Fees: `maker_fee`/`taker_fee` are
+rates in millionths (absent for standard accounts, which pay none).
+
+**GMX details.** GraphQL `https://gmx.squids.live/gmx-synthetics-arbitrum:prod/api/graphql` and REST
+`https://arbitrum-api.gmxinfra.io` (`/tokens`, `/prices/candles`). Amounts in USD are scaled by 1e30; token amounts
+by the token's decimals; fee amounts are in the collateral token (x `collateralTokenPriceMin` / 1e30). Filters match
+checksummed addresses only (an EIP-55 checksum is computed locally). A trip's net = GMX's own `pnlUsd` summed over
+its orders (increase orders carry their fees as negative P&L). No account-value history: the account's maximum
+capital stands in for it (GMX's P&L % denominator).
+
+Sources: [Lighter API docs](https://apidocs.lighter.xyz/docs/get-started-for-programmers),
+[Lighter rate limits](https://apidocs.lighter.xyz/docs/rate-limits),
+[dYdX indexer](https://docs.dydx.exchange/api_integration-clients/indexer_client),
+[Drift → Velocity](https://thedefiant.io/news/defi/drift-protocol-rebrands-to-velocity-dex-ahead-of-relaunch).
+
 ## Later venues (interface only, not built)
 
-Lighter, Paradex, Aster and edgeX each get an adapter class that declares its capability flags. They are marked unchecked until the same Step 0 check is done for each.
+Paradex, Aster and edgeX each keep an adapter class with no capabilities, so the UI can list them honestly.

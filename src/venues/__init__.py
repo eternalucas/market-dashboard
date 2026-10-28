@@ -1,14 +1,18 @@
-"""Venue adapters. Only Hyperliquid is built; the others are listed with no
-capabilities until their docs are checked (docs/venues.md). Nado and
-Variational were checked on 26 Oct 2026 and excluded (no open per-trader
-data comparable to Hyperliquid's)."""
+"""Venue adapters: Hyperliquid, Lighter and GMX v2 (Arbitrum) are built;
+the others are listed with no capabilities (docs/venues.md). Nado,
+Variational, Paradex, Aster, Extended and edgeX keep per-trader history
+behind the account's login; dYdX v4 has no way to find top traders; Drift
+was exploited in April 2026 and is relaunching as Velocity."""
 from __future__ import annotations
 
+from .gmx import GMX
 from .hyperliquid import Hyperliquid
-from .later import Aster, DydxV4, EdgeX, Lighter, Paradex
+from .later import Aster, DydxV4, EdgeX, Paradex
+from .lighter import Lighter
 
-VENUES = {"hyperliquid": Hyperliquid}
-PLANNED = {c.name: c for c in (DydxV4, Lighter, Paradex, Aster, EdgeX)}
+VENUES = {"hyperliquid": Hyperliquid, "lighter": Lighter, "gmx": GMX}
+LABELS = {"hyperliquid": "Hyperliquid", "lighter": "Lighter", "gmx": "GMX (Arbitrum)"}
+PLANNED = {c.name: c for c in (DydxV4, Paradex, Aster, EdgeX)}
 _instances: dict = {}
 
 
