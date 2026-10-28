@@ -34,8 +34,13 @@ def _flat(x: float, ref: float) -> bool:
     return abs(x) <= _tol(ref)
 
 
+def _leg(row, qty: float, fee: float) -> tuple:
+    return (row.ts, qty, row.px, fee, int(row.is_taker))
+
+
 def _new_trip(coin: str, row, qty: float, fee: float, ts) -> dict:
-    return {"trip_id": f"{coin}:{row.fill_id}", "coin": coin, "side": "Long" if row.end_pos > 0 else "Short",
+    return {"_legs": [_leg(row, qty if row.end_pos > 0 else -qty, fee)],
+            "trip_id": f"{coin}:{row.fill_id}", "coin": coin, "side": "Long" if row.end_pos > 0 else "Short",
             "open_ts": ts, "close_ts": pd.NaT, "entry_qty": qty, "entry_notional": qty * row.px,
             "exit_qty": 0.0, "exit_notional": 0.0, "max_qty": qty, "realized_pnl": 0.0, "fees": fee,
             "funding": 0.0, "fills": 1, "taker_fills": int(row.is_taker), "adds": 0,
@@ -43,9 +48,13 @@ def _new_trip(coin: str, row, qty: float, fee: float, ts) -> dict:
             "first_px": row.px}
 
 
-def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None) -> tuple[pd.DataFrame, dict]:
+def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None, legs: bool = False
+                ) -> tuple[pd.DataFrame, dict]:
     """fills: coin, ts, side (B/A), px, sz, start_position, closed_pnl, fee, is_taker, fill_id, [liq_role].
-    funding: coin, ts, usdc, [position_size]. Returns (trips, report)."""
+    funding: coin, ts, usdc, [position_size]. Returns (trips, report).
+    legs=True adds a "legs" column: each trip's own part of every fill as
+    (ts, signed qty, px, fee, is_taker), a flip's fill split between the two
+    trips by quantity (used by the replay engine)."""
     report = {"spot_fills_skipped": 0, "excluded_fills": 0, "excluded_realized_pnl": 0.0, "excluded_fees": 0.0,
               "unattributed_funding_usd": 0.0, "unattributed_funding_n": 0, "liquidations": 0,
               "first_fill": None, "last_fill": None}
@@ -115,6 +124,7 @@ def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None) -> tup
                 cur["exit_notional"] += close_qty * row.px
                 cur["realized_pnl"] += row.closed_pnl
                 cur["fees"] += row.fee * share
+                cur["_legs"].append(_leg(row, -start, row.fee * share))
                 cur["liquidated"] |= liq
                 cur["close_ts"], cur["is_open"] = row.ts, False
                 trips.append(cur)
@@ -127,17 +137,21 @@ def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None) -> tup
                 cur["entry_notional"] += sz * row.px
                 cur["max_qty"] = max(cur["max_qty"], abs(end))
                 cur["fees"] += row.fee
+                cur["_legs"].append(_leg(row, end - start, row.fee))
                 cur["realized_pnl"] += row.closed_pnl          # 0 on venues' adding fills; kept so every dollar is traced
             else:                                                          # partial close
                 cur["exit_qty"] += sz
                 cur["exit_notional"] += sz * row.px
                 cur["realized_pnl"] += row.closed_pnl
                 cur["fees"] += row.fee
+                cur["_legs"].append(_leg(row, end - start, row.fee))
                 cur["liquidated"] |= liq
         if cur is not None:
             trips.append(cur)
 
-    df = pd.DataFrame(trips, columns=TRIP_COLS)
+    df = pd.DataFrame(trips, columns=TRIP_COLS + (["_legs"] if legs else []))
+    if legs:
+        df = df.rename(columns={"_legs": "legs"})
     if df.empty:
         return df, report
     for c in ("open_ts", "close_ts"):          # an all-open column of NaT would otherwise lose its time zone
