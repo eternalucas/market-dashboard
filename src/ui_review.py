@@ -51,10 +51,13 @@ def render(con, cfg) -> None:
     rcon = _rcon()
     qp_trader = st.query_params.get("trader")
     default = "Trader review" if qp_trader else "Top 100"
-    mode = st.segmented_control("View", ["Top 100", "Trader review"], default=default, key="tr-mode",
-                                label_visibility="collapsed") or default
+    mode = st.segmented_control("View", ["Top 100", "Trader review", "Across the Top 100"], default=default,
+                                key="tr-mode", label_visibility="collapsed") or default
     if mode == "Top 100":
         render_board(rcon, cfg)
+    elif mode == "Across the Top 100":
+        from . import ui_batch
+        ui_batch.render(rcon, lbm.Eligibility.from_cfg(cfg))
     else:
         render_trader_page(con, rcon, cfg, qp_trader)
 
