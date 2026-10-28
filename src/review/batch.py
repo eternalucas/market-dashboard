@@ -110,6 +110,7 @@ def run(con, venue: str, board_window: str, a: cst.Assumptions, el=None, progres
     out = summarise(per)
     out["persistence"] = pers
     out["board_window"] = board_window
+    out["venue"] = venue
     out["assumptions"] = a.as_dict()
     out["as_of"] = pd.Timestamp.now(tz="UTC").isoformat()
     return out

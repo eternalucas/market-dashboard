@@ -66,52 +66,72 @@ def render(con, cfg) -> None:
 # Top 100
 # --------------------------------------------------------------------------- #
 
-def _start_refresh(budget_s: int = 600) -> bool:
-    t = st.session_state.get("_tl_thread")
+def _start_refresh(venue: str = "hyperliquid", budget_s: int = 600) -> bool:
+    t = st.session_state.get(f"_tl_thread_{venue}")
     if t is not None and t.is_alive():
         return False
 
     def run():
         c = store.connect()
         try:
-            lbm.refresh(c, "hyperliquid", budget_s=budget_s, say=lambda *_: None)
+            if venue == "lighter":
+                lbm.sample_accounts(c, "lighter", 25)
+            lbm.refresh(c, venue, budget_s=budget_s, say=lambda *_: None)
         finally:
             c.close()
-    t = threading.Thread(target=run, daemon=True, name="tl-manual")
+    t = threading.Thread(target=run, daemon=True, name=f"tl-manual-{venue}")
     t.start()
-    st.session_state["_tl_thread"] = t
+    st.session_state[f"_tl_thread_{venue}"] = t
     return True
+
+
+POOL_HELP = {
+    "hyperliquid": "Top 1,000 by PnL in each of Hyperliquid's week, month and all-time lists (union). Refreshed every "
+                   "6 hours.",
+    "lighter": "Lighter has no public P&L leaderboard: accounts seen in the latest trades of its most traded markets "
+               "(sampled every 15 minutes since 27 Oct 2026), the 600 with the most volume seen, ranked by their own "
+               "P&L history. Accounts that trade often are more likely to be found.",
+    "gmx": "Top 1,000 by P&L in GMX's own 7-day, 30-day and all-time account stats (Arbitrum). Refreshed every 12 hours.",
+}
 
 
 def render_board(rcon, cfg) -> None:
     st.subheader("Top 100 on-chain perp traders")
+    venue = st.segmented_control("Venue", list(venues.VENUES), default="hyperliquid", key="tl-venue",
+                                 format_func=lambda v: venues.LABELS.get(v, v), label_visibility="collapsed") \
+        or "hyperliquid"
+    caps = venues.get(venue).caps
     st.caption("Ranked from each trader's own fills, funding and account history, recomputed here. The venue's "
                "leaderboard only decides whom to look at. Market makers, vaults and protocol accounts are excluded "
                "by behaviour; every filter is adjustable below.")
-    stt = lbm.status(rcon, "hyperliquid")
+    if caps.notes:
+        st.caption(" ".join(f"{v}" for k, v in caps.notes.items() if k in ("leaderboard", "funding_history",
+                                                                           "account_state", "orderbook_history")
+                            and venue != "hyperliquid"))
+    stt = lbm.status(rcon, venue)
     kinds = stt["accounts_by_kind"]
     c = st.columns([1.2, 1, 1, 1, 1.3], vertical_alignment="center")
-    c[0].metric("Candidates", f"{stt['pool'] or 0:,}", help="Top 1,000 by PnL in each of Hyperliquid's week, month "
-                "and all-time lists (union). Refreshed every 6 hours.")
+    c[0].metric("Candidates", f"{stt['pool'] or 0:,}", help=POOL_HELP.get(venue))
     c[1].metric("Analysed", f"{stt['with_metrics']:,}")
     c[2].metric("Market makers", f"{kinds.get('market_maker', 0):,}")
     c[3].metric("Vaults", f"{kinds.get('vault', 0):,}")
     with c[4]:
-        running = st.session_state.get("_tl_thread") is not None and st.session_state["_tl_thread"].is_alive()
-        if st.button("Refresh now (10 min)", disabled=running, width="stretch",
+        th = st.session_state.get(f"_tl_thread_{venue}")
+        running = th is not None and th.is_alive()
+        if st.button("Refresh now (10 min)", disabled=running, width="stretch", key=f"tl-refresh-{venue}",
                      help="The recorder also refreshes every hour while the dashboard is open."):
-            _start_refresh()
+            _start_refresh(venue)
             st.rerun()
         if running:
             st.caption("Refreshing in the background...")
 
-    a, b, v = st.columns([2, 2, 1.4], vertical_alignment="bottom")
+    a, b = st.columns([2, 2], vertical_alignment="bottom")
     window = a.segmented_control("Window", list(WINDOW_LABELS), default="30d",
                                  format_func=lambda w: WINDOW_LABELS[w], key="tl-window") or "30d"
-    sort = b.selectbox("Sort by", list(lbm.SORTS), key="tl-sort")
-    v.selectbox("Venue", ["Hyperliquid"], key="tl-venue",
-                help="Other venues are added once their public data is checked (docs/venues.md). "
-                     "Nado and Variational were checked and excluded: no open per-trader history.")
+    sort = b.selectbox("Sort by", list(lbm.SORTS), key="tl-sort",
+                       help="Other venues were checked and left out (docs/venues.md): Nado, Variational, Paradex, "
+                            "Aster, Extended and edgeX keep per-trader history behind the account's login; dYdX v4 "
+                            "has no way to find its top traders; Drift is relaunching after an exploit.")
 
     el0 = lbm.Eligibility.from_cfg(cfg)
     with st.expander("Eligibility filters"):
@@ -134,7 +154,7 @@ def render_board(rcon, cfg) -> None:
                                                   el0.single_trade_flag, 0.05)
         st.caption("Defaults live in config.yaml under trade_review > eligibility.")
 
-    top, allrows = lbm.board(rcon, window, sort, venue="hyperliquid", el=el)
+    top, allrows = lbm.board(rcon, window, sort, venue=venue, el=el)
     if allrows.empty:
         st.info("No traders analysed yet. The first build runs in the background (about an hour at the venue's "
                 "rate limit); click **Refresh now** to start it straight away.")
@@ -142,7 +162,7 @@ def render_board(rcon, cfg) -> None:
     if len(top) < 100:
         st.warning(f"{len(top)} eligible traders so far for this window: the background sync is still working "
                    f"through the {stt['pool'] or 0} candidates ({stt['with_metrics']} analysed).")
-    st.dataframe(_board_table(top), hide_index=True, width="stretch", height=min(36 * (len(top) + 1) + 3, 720),
+    st.dataframe(_board_table(top, venue), hide_index=True, width="stretch", height=min(36 * (len(top) + 1) + 3, 720),
                  column_config=_board_columns())
     with st.expander(f"Excluded candidates ({int((~allrows['eligible']).sum())})"):
         ex = allrows[~allrows["eligible"]][["account_id", "pnl", "exclusion"]].sort_values("pnl", ascending=False)
@@ -153,13 +173,13 @@ def render_board(rcon, cfg) -> None:
         st.markdown(METHOD_NOTES)
 
 
-def _board_table(top: pd.DataFrame) -> pd.DataFrame:
+def _board_table(top: pd.DataFrame, venue: str = "hyperliquid") -> pd.DataFrame:
     m = top["metrics_json"].map(json.loads)
     get = lambda k: m.map(lambda d: d.get(k))          # noqa: E731
     return pd.DataFrame({
         "Rank": top["rank"].values,
-        "Venue": "HL",
-        "Trader": [f"?trader={a}" for a in top["account_id"]],
+        "Venue": venues.get(venue).label,
+        "Trader": [f"?trader={a}&venue={venue}" for a in top["account_id"]],
         "Account value": get("account_value").values,
         "PnL": top["pnl"].values,
         "Return on equity": top["roe"].values,
@@ -186,7 +206,7 @@ def _board_table(top: pd.DataFrame) -> pd.DataFrame:
 def _board_columns() -> dict:
     N = st.column_config.NumberColumn
     return {
-        "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=(0x[0-9a-f]+)",
+        "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=([0-9a-zx]+)",
                                               help="Opens the trader's review"),
         "Account value": N(format="$%,.0f"), "PnL": N(format="dollar"),
         "Return on equity": N(format="percent"), "Max drawdown": N(format="percent"),
@@ -218,7 +238,17 @@ METHOD_NOTES = """
   still requires an established trader. Market makers: more than 2,000 fills per active day, or more than 80% maker
   fills with a sub-minute median hold, or more than 30% of fills quoted on both sides within a second. Vaults are
   identified from Hyperliquid's vault records.
-- **Candidates** come from Hyperliquid's unofficial stats file (top 1,000 by PnL in each of its windows, accounts with no trading volume dropped). A trader
+- **Lighter:** no public P&L leaderboard, so candidates are accounts seen in the latest trades of its most traded
+  markets (sampled every 15 minutes), ranked by each account's own daily P&L history; accounts that trade often are
+  more likely to be found. Fills come with the account's position and entry cost before each trade, so closed P&L is
+  computed from them. An account's funding payments aren't public: funding is **estimated** (position each hour x the
+  market's hourly rate x the hourly close). Account value = deposits - withdrawals + cumulative P&L, from Lighter's
+  daily P&L history.
+- **GMX (Arbitrum):** candidates from GMX's own per-account stats. Every order fills at the oracle price plus a price
+  impact (no order book, no maker/taker); long and short positions on a market are separate. Each trip's net P&L
+  equals GMX's own realised P&L after fees, price impact, borrowing and funding paid. There is no account-value
+  history, so returns are on the account's maximum capital in positions (GMX's own P&L % denominator).
+- **Candidates** (Hyperliquid) come from Hyperliquid's unofficial stats file (top 1,000 by PnL in each of its windows, accounts with no trading volume dropped). A trader
   outside those lists can't appear here; that's a selection bias of this board, shown here rather than hidden.
 """
 
@@ -243,9 +273,15 @@ def _positions(address: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+EXPLORER = {"hyperliquid": ("Hyperliquid", "https://app.hyperliquid.xyz/explorer/address/{}"),
+            "gmx": ("GMX", "https://app.gmx.io/#/accounts/{}")}
+
+
 def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
-    analysed = pd.read_sql_query("SELECT DISTINCT account_id FROM tr_metrics WHERE venue='hyperliquid' AND eligible=1",
-                                 rcon)["account_id"].tolist()
+    qv = st.query_params.get("venue")
+    venue = qv if qv in venues.VENUES else st.session_state.get("tl-venue") or "hyperliquid"
+    analysed = pd.read_sql_query("SELECT DISTINCT account_id FROM tr_metrics WHERE venue=? AND eligible=1",
+                                 rcon, params=(venue,))["account_id"].tolist()
     sources = ["Leaderboard trader", "Random draw (original rule)"]
     src = st.radio("Trader", sources, horizontal=True, index=0 if (qp_trader or analysed) else 1,
                    label_visibility="collapsed", key="tr-src")
@@ -257,59 +293,74 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
         st.info("No leaderboard trader analysed yet; see Top 100.")
         return
     a, b = st.columns([3, 1], vertical_alignment="bottom")
-    addr = a.selectbox("Account", options, key="tr-acct")
+    addr = a.selectbox(f"Account ({venues.LABELS.get(venue, venue)})", options, key=f"tr-acct-{venue}")
     if b.button("Sync this trader now", width="stretch"):
         with st.spinner("Fetching fills, funding and account history..."):
-            lbm.sync_account(rcon, addr, "hyperliquid")
-            lbm.compute_account(rcon, addr, "hyperliquid", lbm.Eligibility.from_cfg(cfg))
+            lbm.sync_account(rcon, addr, venue)
+            lbm.compute_account(rcon, addr, venue, lbm.Eligibility.from_cfg(cfg))
         st.rerun()
-    fills = store.load(rcon, "tr_fills", "hyperliquid", addr)
+    fills = store.load(rcon, "tr_fills", venue, addr)
     if fills.empty:
         st.info("This account hasn't been synced yet: click **Sync this trader now**.")
         return
-    funding = store.load(rcon, "tr_funding", "hyperliquid", addr)
+    funding = store.load(rcon, "tr_funding", venue, addr)
     trips, rep = reconstruct(fills, funding)
-    sync = store.get_sync(rcon, "hyperliquid", addr, "fills")["notes"]
-    snaps = store.load(rcon, "tr_account_snapshots", "hyperliquid", addr)
+    sync = store.get_sync(rcon, venue, addr, "fills")["notes"]
+    snaps = store.load(rcon, "tr_account_snapshots", venue, addr)
     acct_now = float(snaps.sort_values("ts")["account_value"].iloc[-1]) if not snaps.empty else np.nan
-    st.markdown(f"Trader: `{addr}` ([view on Hyperliquid](https://app.hyperliquid.xyz/explorer/address/{addr}))")
+    if venue in EXPLORER:
+        name, url = EXPLORER[venue]
+        st.markdown(f"Trader: `{addr}` ([view on {name}]({url.format(addr)}))")
+    else:
+        st.markdown(f"Trader: {venues.LABELS.get(venue, venue)} account `{addr}`")
+    caps = venues.get(venue).caps
+    if venue != "hyperliquid" and caps.notes:
+        st.caption(" ".join(caps.notes.values()))
     view = st.segmented_control("Trader view", ["Review", "Diagnosis", "Backtest & Improve", "Data quality"],
                                 default="Review",
                                 key="tr-view", label_visibility="collapsed") or "Review"
     if view == "Review":
-        render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now, _positions(addr),
-                      note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net). "
-                           "Actual results only; simulated ones are on Backtest & Improve, labelled.")
+        est = " (estimated: the venue doesn't publish an account's funding)" if getattr(venues.get(venue),
+                                                                                        "funding_estimated", False) else ""
+        render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now,
+                      _positions(addr) if venue == "hyperliquid" else pd.DataFrame(),
+                      note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net{est}). "
+                           "Actual results only; simulated ones are on Backtest & Improve, labelled.",
+                      venue=venue)
     elif view == "Diagnosis":
         from . import ui_diagnosis
-        ui_diagnosis.render(rcon, addr, trips)
+        ui_diagnosis.render(rcon, addr, trips, venue)
     elif view == "Backtest & Improve":
         from . import ui_backtest, ui_diagnosis
         from .review import costs
         closed = trips[~trips["is_open"] & ~trips["exit_unobserved"]] if not trips.empty else trips
-        ui_backtest.render(rcon, addr, len(closed), costs.own_fee_rates(fills), ui_diagnosis.result(rcon, addr, trips))
+        ui_backtest.render(rcon, addr, len(closed), costs.own_fee_rates(fills),
+                           ui_diagnosis.result(rcon, addr, trips, venue), venue)
     else:
         from . import ui_diagnosis
-        render_data_quality(fills, funding, trips, rep, sync, ui_diagnosis.result(rcon, addr, trips))
+        render_data_quality(fills, funding, trips, rep, sync, ui_diagnosis.result(rcon, addr, trips, venue), venue)
 
 
-def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = None) -> None:
+def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = None, venue: str = "hyperliquid") -> None:
     from . import ui_diagnosis
+    ad = venues.get(venue)
+    vname = venues.LABELS.get(venue, venue)
     with st.container():
         cov = sync.get("volume_coverage")
         rows = [
-            ("Fills stored", f"{len(fills):,}", "Hyperliquid's free API keeps the 10,000 most recent per wallet."),
+            ("Fills stored", f"{len(fills):,}", f"The newest {getattr(ad, 'FILLS_CAP', 10_000):,} per account are kept."),
             ("History", f"{fills['ts'].min():%d %b %Y} to {fills['ts'].max():%d %b %Y}", ""),
             ("History truncated", "Yes" if sync.get("history_truncated") else "No",
-             "Yes when the wallet hit the 10,000-fill cap or our fills cover < 98% of its all-time volume."),
+             "Yes when the account hit the fill cap or our fills cover < 98% of its all-time volume."),
             ("Volume covered", f"{cov:.1%}" if isinstance(cov, (int, float)) and cov == cov else "n/a",
-             "Our fills' notional / Hyperliquid's all-time volume for the account."),
+             f"Our fills' notional / {vname}'s all-time volume for the account."),
             ("Fills of a position opened before the history", f"{rep['excluded_fills']:,}",
              f"Realized P&L {money(rep['excluded_realized_pnl'])} on them is excluded from trips."),
             ("Positions that changed without a fill", f"{len(rep.get('position_gaps', [])):,}",
              "The open trip is closed as 'exit not observed'; its P&L can't be reconstructed."),
             ("Funding payments", f"{len(funding):,}",
-             f"{rep['unattributed_funding_n']} ({money(rep['unattributed_funding_usd'])}) outside any reconstructed trip."),
+             f"{rep['unattributed_funding_n']} ({money(rep['unattributed_funding_usd'])}) outside any reconstructed trip."
+             + (" " + ad.caps.notes["funding_history"] if "funding_history" in ad.caps.notes else "")),
             ("Liquidations (as the liquidated account)", f"{rep['liquidations']:,}", ""),
             ("Spot fills skipped", f"{rep['spot_fills_skipped']:,}", "This review covers perps only."),
             ("Order-book history", "Not available",
@@ -320,6 +371,9 @@ def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = No
         else:
             rows.append(("Market data behind the diagnosis", "Not loaded yet", "Opening the Diagnosis view loads it."))
         st.table(pd.DataFrame(rows, columns=["Check", "Value", "Note"]).set_index("Check"))
+        for k, note in ad.caps.notes.items():
+            if k in ("leaderboard", "liquidations", "account_state", "orderbook_history") and venue != "hyperliquid":
+                st.caption(f"{vname}: {note}")
         if rep.get("position_gaps"):
             st.caption("Positions that changed without a fill (trips ending here are left out of the statistics):")
             st.dataframe(pd.DataFrame(rep["position_gaps"]).rename(columns={
@@ -358,21 +412,24 @@ def render_random_draw(con, cfg) -> None:
 
 
 def render_review(trips: pd.DataFrame, fill_times: pd.Series, acct_now: float, positions: pd.DataFrame,
-                  note: str = "") -> None:
+                  note: str = "", venue: str = "hyperliquid") -> None:
     """The per-trader review (metrics, equity, rules, breakdowns, trips)."""
     closed = trips[~trips["open"]] if not trips.empty else trips
     if "exit_unobserved" in closed:          # P&L unknown: listed in Data quality, kept out of the stats
         closed = closed[~closed["exit_unobserved"]]
     stt = tr.stats(closed)
     m = st.columns(6)
-    m[0].metric("Account value", money(acct_now))
+    m[0].metric("Max capital" if venue == "gmx" else "Account value", money(acct_now),
+                help="GMX has no account-value history: the account's largest capital in positions stands in for "
+                     "it." if venue == "gmx" else None)
     m[1].metric("Closed trades", f"{stt.get('trades', 0):,}")
     m[2].metric("Win rate", f"{stt.get('win_rate', np.nan):.0%}" if stt else "n/a")
     m[3].metric("Profit factor", f"{stt.get('profit_factor', np.nan):.2f}" if stt else "n/a")
     m[4].metric("Net P&L (after fees)", money(stt.get("net_pnl", 0)))
     m[5].metric("Max drawdown", money(stt.get("max_drawdown", 0)))
     st.caption(f"{len(fill_times):,} fills from {fill_times.min():%d %b %Y} to {fill_times.max():%d %b %Y} "
-               f"(Hyperliquid keeps each account's 10,000 most recent fills). {note}")
+               f"({venues.LABELS.get(venue, venue)}: the newest "
+               f"{getattr(venues.get(venue), 'FILLS_CAP', 10_000):,} fills per account are kept). {note}")
     if stt:
         m2 = st.columns(6)
         m2[0].metric("Expectancy / trade", money(stt["expectancy"], 2))
@@ -382,8 +439,11 @@ def render_review(trips: pd.DataFrame, fill_times: pd.Series, acct_now: float, p
                      help="Share of gross profit: " + (f"{stt['fee_share_of_gross_profit']:.0%}" if pd.notna(stt['fee_share_of_gross_profit']) else "n/a"))
         m2[4].metric("Median hold, winners", tr.duration(stt["median_hold_win_h"]))
         m2[5].metric("Median hold, losers", tr.duration(stt["median_hold_loss_h"]))
-        st.caption(f"Longest losing streak: {stt['longest_losing_streak']} trades. Markets named 'xyz:...' are "
-                   "Hyperliquid's builder-deployed perps on stocks, indices and commodities (e.g. xyz:SP500).")
+        extra = {"hyperliquid": " Markets named 'xyz:...' are Hyperliquid's builder-deployed perps on stocks, indices "
+                                "and commodities (e.g. xyz:SP500).",
+                 "gmx": " GMX keeps long and short positions on a market separate, so each side is listed as its "
+                        "own market ('ETH long', 'ETH short')."}.get(venue, "")
+        st.caption(f"Longest losing streak: {stt['longest_losing_streak']} trades.{extra}")
         eqc = closed.sort_values("close_time")
         curve = eqc["net"].cumsum()
         dd = curve - curve.cummax()

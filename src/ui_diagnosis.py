@@ -64,9 +64,10 @@ def num(x, fmt="{:.2f}"):
 # Background loading of market data
 # --------------------------------------------------------------------------- #
 
-def _start_loader(addr: str, trips: pd.DataFrame, coins: list[str]) -> dict:
+def _start_loader(addr: str, trips: pd.DataFrame, coins: list[str], venue: str = "hyperliquid") -> dict:
+    key = f"{venue}:{addr}"
     with _LOCK:
-        job = _JOBS.get(addr)
+        job = _JOBS.get(key)
         if job and job["thread"].is_alive():
             return job
         job = {"progress": 0.0, "message": "Starting", "report": {}, "done": False, "started": time.time()}
@@ -74,15 +75,15 @@ def _start_loader(addr: str, trips: pd.DataFrame, coins: list[str]) -> dict:
         def run():
             con = store.connect()
             try:
-                ad = venues.get("hyperliquid")
+                ad = venues.get(venue)
                 now = pd.Timestamp.now(tz="UTC")
                 needs = mk.plan(trips, now, coins)
 
                 def prog(p, m):
                     job["progress"], job["message"] = 0.8 * p, m
-                rep = mk.ensure_candles(con, ad, needs, budget_s=420, progress=prog, now=now)
+                rep = mk.ensure_candles(con, ad, needs, venue, budget_s=420, progress=prog, now=now)
                 job["message"] = "Funding history"
-                rep["funding"] = mk.ensure_market_funding(con, ad, trips, coins, budget_s=150, now=now)
+                rep["funding"] = mk.ensure_market_funding(con, ad, trips, coins, venue, budget_s=150, now=now)
                 job["report"] = rep
             except Exception as ex:  # noqa: BLE001 - shown on the page
                 job["report"] = {"errors": {"loader": f"{type(ex).__name__}: {ex}"}}
@@ -91,37 +92,37 @@ def _start_loader(addr: str, trips: pd.DataFrame, coins: list[str]) -> dict:
                 con.close()
         job["thread"] = threading.Thread(target=run, daemon=True, name=f"diag-{addr[:8]}")
         job["thread"].start()
-        _JOBS[addr] = job
+        _JOBS[key] = job
         return job
 
 
-def _price_version(rcon, coins) -> str:
+def _price_version(rcon, coins, venue: str = "hyperliquid") -> str:
     if not coins:
         return "none"
     q = ",".join("?" * len(coins))
-    a = rcon.execute(f"SELECT COUNT(*), MAX(ts) FROM tr_candles WHERE venue='hyperliquid' AND coin IN ({q})", coins).fetchone()
-    b = rcon.execute(f"SELECT COUNT(*), MAX(ts) FROM tr_market_funding WHERE venue='hyperliquid' AND coin IN ({q})",
-                     coins).fetchone()
+    a = rcon.execute(f"SELECT COUNT(*), MAX(ts) FROM tr_candles WHERE venue=? AND coin IN ({q})", [venue, *coins]).fetchone()
+    b = rcon.execute(f"SELECT COUNT(*), MAX(ts) FROM tr_market_funding WHERE venue=? AND coin IN ({q})",
+                     [venue, *coins]).fetchone()
     return f"{a[0]}-{a[1]}-{b[0]}-{b[1]}"
 
 
 @st.cache_data(ttl=900, show_spinner=False, max_entries=20)
-def _diagnose(addr: str, data_version: str, price_version: str) -> dict:
+def _diagnose(addr: str, data_version: str, price_version: str, venue: str = "hyperliquid") -> dict:
     con = store.connect()
     try:
-        fills = store.load(con, "tr_fills", "hyperliquid", addr)
-        funding = store.load(con, "tr_funding", "hyperliquid", addr)
+        fills = store.load(con, "tr_fills", venue, addr)
+        funding = store.load(con, "tr_funding", venue, addr)
         from .review.reconstruct import reconstruct
         trips, rep = reconstruct(fills, funding)
         if trips.empty:
             return {}
         coins = sorted(trips["coin"].unique())
-        prices = mk.Prices.load(con, coins, account_funding=funding)
+        prices = mk.Prices.load(con, coins, venue, account_funding=funding)
         perp = fills[fills["coin"].map(lambda c: not (c.startswith("@") or "/" in c))]
-        closes = {c: store.candles(con, "hyperliquid", c, "1d")["c"] for c in sorted(perp["coin"].unique())}
+        closes = {c: store.candles(con, venue, c, "1d")["c"] for c in sorted(perp["coin"].unique())}
         now = pd.Timestamp.now(tz="UTC")
         daily = eq.daily_pnl(perp, funding, closes, now)
-        snaps = store.load(con, "tr_account_snapshots", "hyperliquid", addr)
+        snaps = store.load(con, "tr_account_snapshots", venue, addr)
         avs = [g.set_index("ts")["account_value"] for _, g in snaps.groupby("source")] if not snaps.empty else []
         equity = eq.daily_equity(avs, daily.index) if not daily.empty else pd.Series(dtype=float)
         res = dg.run(trips, fills, funding, prices, daily, equity, now)
@@ -135,23 +136,26 @@ def _diagnose(addr: str, data_version: str, price_version: str) -> dict:
 # Page
 # --------------------------------------------------------------------------- #
 
-def render(rcon, addr: str, trips: pd.DataFrame) -> dict:
+def render(rcon, addr: str, trips: pd.DataFrame, venue: str = "hyperliquid") -> dict:
     """Draws the Diagnosis view; returns the result (for the data-quality panel)."""
     if trips.empty:
         st.info("No round trips to diagnose yet.")
         return {}
     coins, skipped = mk.chosen_coins(trips)
     now = pd.Timestamp.now(tz="UTC")
-    pending = mk.missing(rcon, mk.plan(trips, now, coins), now=now)
-    job = _JOBS.get(addr)
+    global SOURCE
+    SOURCE = f"{venues.LABELS.get(venue, venue)} (account fills and funding; candles; funding history)"
+    key = f"{venue}:{addr}"
+    pending = mk.missing(rcon, mk.plan(trips, now, coins), venue, now=now)
+    job = _JOBS.get(key)
     loading = bool(job and not job["done"])
     if pending and not loading and not (job and job["done"] and time.time() - job["started"] < 600):
-        job = _start_loader(addr, trips, coins)
-        st.session_state[f"_diag_rerun_{addr}"] = False
+        job = _start_loader(addr, trips, coins, venue)
+        st.session_state[f"_diag_rerun_{key}"] = False
         loading = True
     if loading:
-        _progress(addr)
-    res = _diagnose(addr, store.data_version(rcon, "hyperliquid", addr), _price_version(rcon, coins))
+        _progress(key)
+    res = _diagnose(addr, store.data_version(rcon, venue, addr), _price_version(rcon, coins, venue), venue)
     if not res:
         st.info("No closed round trips to diagnose yet.")
         return {}
@@ -166,14 +170,14 @@ def render(rcon, addr: str, trips: pd.DataFrame) -> dict:
     return res
 
 
-def result(rcon, addr: str, trips: pd.DataFrame) -> dict:
+def result(rcon, addr: str, trips: pd.DataFrame, venue: str = "hyperliquid") -> dict:
     """The diagnosis from whatever market data is stored (no fetching)."""
     if trips.empty:
         return {}
     coins, skipped = mk.chosen_coins(trips)
-    res = _diagnose(addr, store.data_version(rcon, "hyperliquid", addr), _price_version(rcon, coins))
+    res = _diagnose(addr, store.data_version(rcon, venue, addr), _price_version(rcon, coins, venue), venue)
     if res:
-        res = {**res, "skipped_coins": skipped, "loader": (_JOBS.get(addr) or {}).get("report", {})}
+        res = {**res, "skipped_coins": skipped, "loader": (_JOBS.get(f"{venue}:{addr}") or {}).get("report", {})}
     return res
 
 

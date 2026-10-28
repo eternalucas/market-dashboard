@@ -39,7 +39,7 @@ class FakeVenue(VenueAdapter):
         super().__init__()
         self.accounts = accounts            # id -> {"fills": [...], "recent": int, "vault": bool, "pnl": {...}}
 
-    def leaderboard(self):
+    def leaderboard(self, con=None):
         return pd.DataFrame([{"account_id": a, "account_value": 50_000.0, "week_pnl": d["pnl"],
                               "month_pnl": d["pnl"], "allTime_pnl": d["pnl"]} for a, d in self.accounts.items()])
 

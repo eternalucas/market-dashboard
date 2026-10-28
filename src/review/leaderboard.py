@@ -72,7 +72,9 @@ def candidates(lb: pd.DataFrame, per_window: int = 1000) -> pd.DataFrame:
 
 def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 1000) -> pd.DataFrame:
     ad = venues.get(venue)
-    lb = ad.leaderboard()
+    lb = ad.leaderboard(con=con)
+    if lb.empty:
+        return lb
     pool = candidates(lb, per_window)
     now = pd.Timestamp.now(tz="UTC").isoformat()
     rows = pd.DataFrame({
@@ -86,11 +88,16 @@ def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 1000) 
     return pool
 
 
-def current_pool(con, venue: str = "hyperliquid", max_age_h: float = 6, per_window: int = 1000) -> pd.DataFrame:
+POOL_MAX_AGE_H = {"hyperliquid": 6, "lighter": 24, "gmx": 12}
+
+
+def current_pool(con, venue: str = "hyperliquid", max_age_h: float | None = None, per_window: int = 1000) -> pd.DataFrame:
     """The stored pool if it's recent, otherwise a fresh one (the stats file is ~20 MB)."""
+    max_age_h = max_age_h or POOL_MAX_AGE_H.get(venue, 6)
     last = con.execute("SELECT MAX(as_of) FROM tr_candidates WHERE venue=?", (venue,)).fetchone()[0]
     n = con.execute("SELECT COUNT(*) FROM tr_candidates WHERE venue=?", (venue,)).fetchone()[0]
-    if last and n >= per_window and pd.Timestamp.now(tz="UTC") - pd.Timestamp(last) < pd.Timedelta(hours=max_age_h):
+    enough = n >= min(per_window, 100) if venue != "hyperliquid" else n >= per_window
+    if last and enough and pd.Timestamp.now(tz="UTC") - pd.Timestamp(last) < pd.Timedelta(hours=max_age_h):
         df = pd.read_sql_query("SELECT * FROM tr_candidates WHERE venue=?", con, params=(venue,))
         pnl = df["venue_pnl_json"].map(json.loads).apply(pd.Series)
         return pd.concat([df, pnl], axis=1)
@@ -153,7 +160,10 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
     our_vlm = con.execute("SELECT SUM(ABS(px*sz)) FROM tr_fills WHERE venue=? AND account_id=?",
                           (venue, acct)).fetchone()[0] or 0.0
     coverage = our_vlm / venue_vlm if venue_vlm else np.nan
-    truncated = bool(n_total >= 0.95 * 10_000 or (coverage == coverage and coverage < 0.98))
+    cap = getattr(ad, "FILLS_CAP", 10_000)
+    truncated = bool(n_total >= 0.95 * cap or (coverage == coverage and coverage < 0.98))
+    if getattr(ad, "funding_estimated", False):
+        _estimate_funding(con, ad, venue, acct)
     store.set_sync(con, venue, acct, "fills", last, {
         "fills": n_total, "first_fill": first_ts, "venue_all_time_volume": venue_vlm, "our_volume": our_vlm,
         "volume_coverage": coverage, "history_truncated": truncated})
@@ -161,6 +171,62 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
         _set_kind(con, venue, acct, "unknown", "")
     info.update({"new_fills": len(new), "fills": n_total, "truncated": truncated, "coverage": coverage})
     return info
+
+
+def _estimate_funding(con, ad, venue: str, acct: str) -> None:
+    """Venues that don't publish an account's funding (Lighter): its
+    position at each hourly settlement x the market's rate x the hourly
+    close. Replaces the account's stored estimate."""
+    from ..venues.lighter import estimate_funding
+    fills = store.load(con, "tr_fills", venue, acct)
+    if fills.empty:
+        return
+    now_ms = int(time.time() * 1000)
+    first_ms = int(fills["ts"].min().timestamp() * 1000)
+    rates, closes = {}, {}
+    for coin in fills["coin"].unique():
+        hi = con.execute("SELECT MAX(ts) FROM tr_market_funding WHERE venue=? AND coin=?", (venue, coin)).fetchone()[0]
+        lo = con.execute("SELECT MIN(ts) FROM tr_market_funding WHERE venue=? AND coin=?", (venue, coin)).fetchone()[0]
+        try:
+            if not hi or pd.Timestamp(lo) > pd.Timestamp(first_ms, unit="ms", tz="UTC") + pd.Timedelta(hours=2):
+                store.upsert(con, "tr_market_funding", ad.market_funding(coin, first_ms))
+            elif now_ms - pd.Timestamp(hi).timestamp() * 1000 > 3_600_000:
+                store.upsert(con, "tr_market_funding", ad.market_funding(coin, int(pd.Timestamp(hi).timestamp() * 1000) + 1))
+            c = store.candles(con, venue, coin, "1h")
+            if c.empty or c.index.min() > pd.Timestamp(first_ms, unit="ms", tz="UTC") or \
+                    now_ms - c.index.max().timestamp() * 1000 > 2 * 3_600_000:
+                store.upsert(con, "tr_candles", ad.candles(coin, "1h", first_ms - 3_600_000, now_ms))
+                c = store.candles(con, venue, coin, "1h")
+        except Exception:  # noqa: BLE001 - that coin's funding is then left out (and counted)
+            continue
+        f = pd.read_sql_query("SELECT ts, rate FROM tr_market_funding WHERE venue=? AND coin=? ORDER BY ts", con,
+                              params=(venue, coin))
+        if not f.empty:
+            rates[coin] = pd.Series(f["rate"].to_numpy(), index=pd.to_datetime(f["ts"], utc=True, format="ISO8601"))
+        if not c.empty:
+            closes[coin] = c["c"]
+    est = estimate_funding(fills, rates, closes, acct, venue)
+    con.execute("DELETE FROM tr_funding WHERE venue=? AND account_id=?", (venue, acct))
+    con.commit()
+    if not est.empty:
+        store.upsert(con, "tr_funding", est)
+
+
+def sample_accounts(con, venue: str = "lighter", top_markets: int = 25) -> int:
+    """Discovery for venues without a public P&L leaderboard: accounts in
+    the latest trades of the most traded markets, accumulated in tr_seen."""
+    ad = venues.get(venue)
+    s = ad.sample_accounts(top_markets)
+    if s.empty:
+        return 0
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    con.executemany(
+        "INSERT INTO tr_seen (venue, account_id, notional, trades, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(venue, account_id) DO UPDATE SET notional = notional + excluded.notional, "
+        "trades = trades + excluded.trades, last_seen = excluded.last_seen",
+        [(venue, r.account_id, float(r.notional), int(r.trades), now, now) for r in s.itertuples()])
+    con.commit()
+    return len(s)
 
 
 def _set_kind(con, venue, acct, kind, reason):
