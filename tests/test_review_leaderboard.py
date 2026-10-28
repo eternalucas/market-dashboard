@@ -131,3 +131,23 @@ def test_candidates_drop_accounts_without_volume():
     lb = pd.DataFrame({"account_id": list("ab"), "week_pnl": [5, 4], "month_pnl": [5, 4], "allTime_pnl": [5, 4],
                        "week_vlm": [0, 1e6], "month_vlm": [0, 1e6], "allTime_vlm": [0, 1e6]})
     assert list(lbm.candidates(lb, per_window=5)["account_id"]) == ["b"]
+
+
+def test_two_sided_window_is_one_second_at_any_time_resolution():
+    """pandas 3 parses stored timestamps at microsecond resolution; the 1 s
+    window must not become 1,000 s (which flagged ordinary traders)."""
+    from src.review.leaderboard import behaviour
+    ts = pd.to_datetime(pd.Series(["2026-10-27T10:00:00.000+00:00", "2026-10-27T10:05:00.000+00:00",
+                                   "2026-10-27T10:10:00.000+00:00", "2026-10-27T10:10:00.500+00:00"]),
+                        utc=True, format="ISO8601")
+    assert ts.dtype.unit in ("us", "ms", "ns")
+    f = pd.DataFrame({"ts": ts, "coin": "BTC", "side": ["B", "A", "B", "A"], "is_taker": 1})
+    b = behaviour(f, pd.DataFrame(columns=["is_open", "hold_hours"]))
+    assert b["two_sided_share"] == 0.5          # only the last two are within 1 s
+
+
+def test_behaviour_labels_are_recomputed_but_sync_labels_stick():
+    assert lbm.sticky_kind("vault", "Hyperliquid vault")
+    assert lbm.sticky_kind("market_maker", "2,400+ fills in the last 24 hours")
+    assert not lbm.sticky_kind("market_maker", "45% of fills quoted on both sides within 1 s")
+    assert not lbm.sticky_kind("trader", "")

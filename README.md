@@ -11,7 +11,7 @@ It's a data tool, not a trading bot: it informs decisions, it doesn't make them.
 
 - 287 charts across 38 dashboards, each with an "About this chart" note on how the metric is built
 - 121 labelled wallets tracked (exchanges, market makers, Bitcoin wallets holding 10,000+ BTC)
-- 150+ tests, run without the network against real captured API responses
+- 180+ tests, run without the network against real captured API responses
 - Outputs checked against Glassnode's free reference values where available; every discrepancy and fix is logged in [`BUILD_LOG.md`](BUILD_LOG.md)
 
 ## Views
@@ -36,7 +36,10 @@ It's a data tool, not a trading bot: it informs decisions, it doesn't make them.
   from each trader's own fills, funding and account history rather than the
   venue's leaderboard, with market makers and vaults excluded by behaviour;
   each trader opens into a post-trade review that rebuilds round trips from
-  raw fills and flags recurring mistakes.
+  raw fills and flags recurring mistakes, a diagnosis (strategy fingerprint,
+  execution, risk, sizing, where the edge comes from, what they do right) and
+  a backtest that replays their real entries with better exits, sizing,
+  execution or selection, validated out of sample.
 - **Data health**: which feeds succeeded or failed on the last run, and why.
 
 Also in this repo: two TradingView Pine Script indicators in [`pine/`](pine/)
@@ -185,6 +188,18 @@ fees, and breakdowns by market, entry time, holding time and size. The
 recurring-error check looks for losers held longer than winners, sizing up
 after a loss, averaging down, losing markets and time windows, fee drag and
 overtrading days, and reports what the flagged trades cost.
+
+**Backtest & Improve.** Each trip is replayed from its own fills, so an
+unchanged replay reproduces the actual result (checked on every run; within
+0.03% on the real wallets tested). Rules are laid over the trader's real
+entries one at a time (stops, take profit, time stop, volatility targeting,
+fixed-fractional risk, capped Kelly, no averaging down, limit entries,
+dropping losing markets, hours or regimes), with the trader's own fee rates,
+spread plus size impact, actual funding and a liquidation check. Parameters
+are chosen on the first 70% of trips and reported on the last 30%, with
+block-bootstrap intervals, a deflated Sharpe for the number of variants tried
+and a confidence label; everything simulated is labelled as such. Full method:
+[`docs/trade-review-methodology.md`](docs/trade-review-methodology.md).
 
 A reproducible random draw (seed in config) from leaderboard accounts worth
 $10k to $100k is still available as a single example.

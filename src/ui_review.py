@@ -270,15 +270,21 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
     snaps = store.load(rcon, "tr_account_snapshots", "hyperliquid", addr)
     acct_now = float(snaps.sort_values("ts")["account_value"].iloc[-1]) if not snaps.empty else np.nan
     st.markdown(f"Trader: `{addr}` ([view on Hyperliquid](https://app.hyperliquid.xyz/explorer/address/{addr}))")
-    view = st.segmented_control("Trader view", ["Review", "Diagnosis", "Data quality"], default="Review",
+    view = st.segmented_control("Trader view", ["Review", "Diagnosis", "Backtest & Improve", "Data quality"],
+                                default="Review",
                                 key="tr-view", label_visibility="collapsed") or "Review"
     if view == "Review":
         render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now, _positions(addr),
                       note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net). "
-                           "Simulated results are never shown on this page; Backtest & Improve arrives in Phase 3.")
+                           "Actual results only; simulated ones are on Backtest & Improve, labelled.")
     elif view == "Diagnosis":
         from . import ui_diagnosis
         ui_diagnosis.render(rcon, addr, trips)
+    elif view == "Backtest & Improve":
+        from . import ui_backtest, ui_diagnosis
+        from .review import costs
+        closed = trips[~trips["is_open"] & ~trips["exit_unobserved"]] if not trips.empty else trips
+        ui_backtest.render(rcon, addr, len(closed), costs.own_fee_rates(fills), ui_diagnosis.result(rcon, addr, trips))
     else:
         from . import ui_diagnosis
         render_data_quality(fills, funding, trips, rep, sync, ui_diagnosis.result(rcon, addr, trips))

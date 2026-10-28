@@ -381,7 +381,7 @@ def _risk(res) -> None:
                     f.add_vline(x=rk["winner_mae_p10"] * 100, line=dict(color=GREY, dash="dash", width=1))
             f.update_xaxes(title_text="Max move against (%)", ticksuffix="%")
             f.update_yaxes(title_text="Max move in favour (%)", ticksuffix="%")
-            cc.chart(_layout(f, 320).update_layout(legend=dict(orientation="h", y=1.08)), width="stretch",
+            cc.chart(_layout(f, 320), width="stretch",
                      config=CHART_CFG)
     with b:
         with _card("dg-dd", "Account drawdown (daily)",

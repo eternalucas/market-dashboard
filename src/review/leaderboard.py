@@ -108,7 +108,7 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
     ad = venues.get(venue)
     acct = account_id.lower()
     info = {"account_id": acct}
-    prior = con.execute("SELECT kind FROM tr_accounts WHERE venue=? AND account_id=?", (venue, acct)).fetchone()
+    prior = con.execute("SELECT kind, kind_reason FROM tr_accounts WHERE venue=? AND account_id=?", (venue, acct)).fetchone()
     if prior is None or prior[0] in (None, "unknown"):
         recent = ad.recent_fill_rate(acct, 24)
         if recent >= mm_fills_per_day:
@@ -119,7 +119,7 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
             _set_kind(con, venue, acct, "vault", "Hyperliquid vault (vaultDetails)")
             info["kind"] = "vault"
             return info
-    elif prior[0] in ("market_maker", "vault"):
+    elif sticky_kind(prior[0], prior[1]):
         info["kind"] = prior[0]
         return info
 
@@ -207,7 +207,7 @@ def behaviour(fills: pd.DataFrame, trips: pd.DataFrame) -> dict:
     f = fills.sort_values("ts")
     two = 0
     for _, g in f.groupby("coin"):
-        t = g["ts"].astype("int64").to_numpy() // 1_000_000
+        t = pd.DatetimeIndex(g["ts"]).as_unit("ms").asi8          # milliseconds, whatever the stored resolution
         s = (g["side"] == "B").to_numpy()
         if len(t) < 2:
             continue
@@ -220,6 +220,13 @@ def behaviour(fills: pd.DataFrame, trips: pd.DataFrame) -> dict:
             "maker_share": float(1 - fills["is_taker"].mean()),
             "two_sided_share": two / len(fills),
             "median_hold_min": float(closed["hold_hours"].median() * 60) if not closed.empty else np.nan}
+
+
+def sticky_kind(kind: str | None, reason: str | None) -> bool:
+    """Vaults, and market makers caught by the quick fill-rate check at sync
+    (whose fills are never downloaded), stay excluded. A market-maker label
+    from behaviour is recomputed every time."""
+    return kind == "vault" or (kind == "market_maker" and "in the last 24 hours" in (reason or ""))
 
 
 def classify(beh: dict, kind: str | None, el: Eligibility) -> tuple[str, str]:
@@ -246,9 +253,10 @@ def compute_account(con, account_id: str, venue: str = "hyperliquid", el: Eligib
                            (venue, acct)).fetchone()
     kind, reason = (kind_row or (None, ""))
     now = (now or pd.Timestamp.now(tz="UTC"))
-    if kind in ("market_maker", "vault"):
+    if sticky_kind(kind, reason):
         _store_excluded(con, venue, acct, kind, reason, now)
         return {"kind": kind}
+    kind = None                      # behaviour-based labels are re-evaluated on every recompute
     fills = store.load(con, "tr_fills", venue, acct)
     funding = store.load(con, "tr_funding", venue, acct)
     trips, rep = reconstruct(fills, funding)
@@ -420,6 +428,7 @@ def refresh(con, venue: str = "hyperliquid", per_window: int = 1000, budget_s: f
     most promising first, until the time budget runs out. Safe to stop and
     resume: progress is stored per account."""
     t0 = time.time()
+    fix_two_sided(con, venue, el, say)
     pool = current_pool(con, venue, per_window=per_window)
     # Active traders first: monthly volume relative to account size, so the board fills with
     # reviewable traders early instead of spending the first hours on buy-and-hold whales.
@@ -430,8 +439,9 @@ def refresh(con, venue: str = "hyperliquid", per_window: int = 1000, budget_s: f
         if time.time() - t0 > budget_s:
             break
         st = store.get_sync(con, venue, acct, "fills")
-        kind = con.execute("SELECT kind FROM tr_accounts WHERE venue=? AND account_id=?", (venue, acct)).fetchone()
-        if kind and kind[0] in ("market_maker", "vault"):
+        kind = con.execute("SELECT kind, kind_reason FROM tr_accounts WHERE venue=? AND account_id=?",
+                           (venue, acct)).fetchone()
+        if kind and sticky_kind(*kind):
             skipped += 1
             continue
         if st["last_ok"] and pd.Timestamp.now(tz="UTC") - pd.Timestamp(st["last_ok"]) < pd.Timedelta(hours=max_age_h):
@@ -447,6 +457,30 @@ def refresh(con, venue: str = "hyperliquid", per_window: int = 1000, budget_s: f
     if done:
         snapshot_boards(con, venue)
     return {"pool": len(pool), "synced": done, "skipped": skipped, "seconds": round(time.time() - t0)}
+
+
+def fix_two_sided(con, venue: str = "hyperliquid", el: Eligibility | None = None, say=print) -> int:
+    """One-off repair (27 Oct 2026): the "quoted on both sides within 1 s"
+    check read microsecond timestamps as nanoseconds, so its window was
+    1,000 s and ordinary traders were labelled market makers. Every account
+    labelled for that reason is recomputed from its stored fills (no network
+    calls except daily closes older than 6 hours)."""
+    if store.get_sync(con, venue, "_meta", "two_sided_fix")["last_ok"]:
+        return 0
+    rows = con.execute("SELECT account_id FROM tr_accounts WHERE venue=? AND kind='market_maker' "
+                       "AND kind_reason LIKE '%both sides%'", (venue,)).fetchall()
+    n = 0
+    for (acct,) in rows:
+        try:
+            compute_account(con, acct, venue, el)
+            n += 1
+        except Exception as e:  # noqa: BLE001
+            store.set_sync(con, venue, acct, "error", None, {"error": f"two-sided fix: {type(e).__name__}: {e}"})
+    if n:
+        snapshot_boards(con, venue)
+    store.set_sync(con, venue, "_meta", "two_sided_fix", None, {"recomputed": n})
+    say(f"two-sided fix: recomputed {n} accounts")
+    return n
 
 
 def status(con, venue: str = "hyperliquid") -> dict:
