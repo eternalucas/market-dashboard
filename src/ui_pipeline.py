@@ -8,7 +8,7 @@ src/pipeline_map.py and the live health table.
 
 Drawn as an SVG component (not Plotly) so that hovering a box lights up the
 lines its feeds travel, clicking opens its details and feeds, and the view
-can be zoomed (50-200%) and dragged.
+can be zoomed (50-200%, including 90%) and dragged.
 """
 from __future__ import annotations
 
@@ -316,7 +316,7 @@ def page(h: pd.DataFrame) -> tuple[str, int]:
     d = model(h)
     view_h = int(d["height"]) + 8
     opts = "".join(f'<option value="{v}"{" selected" if v == 1 else ""}>{int(v * 100)}%</option>'
-                   for v in (0.5, 0.75, 1, 1.25, 1.5, 2))
+                   for v in (0.5, 0.75, 0.9, 1, 1.25, 1.5, 2))
     out = (PAGE.replace("__DATA__", json.dumps(d).replace("</", "<\\/")).replace("__ACCENT__", ACCENT)
                .replace("__VIEWH__", str(view_h)).replace("__OPTS__", opts))
     return out, view_h
