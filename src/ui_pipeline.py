@@ -4,12 +4,18 @@ Four columns, left to right: where data comes from (providers), what fetches it
 and how often (recorder jobs), where it is stored, and the tabs that show it.
 Boxes and lines are coloured by the worst status of the feeds behind them, so a
 failing provider shows the path to every tab it affects. Built from
-src/pipeline_map.py and the live health table; clicking a box lists its feeds.
+src/pipeline_map.py and the live health table.
+
+Drawn as an SVG component (not Plotly) so that hovering a box lights up the
+lines its feeds travel, clicking opens its details and feeds, and the view
+can be zoomed (50-200%) and dragged.
 """
 from __future__ import annotations
 
 import pandas as pd
-import plotly.graph_objects as go
+import json
+
+import streamlit.components.v1 as components
 import streamlit as st
 
 from . import pipeline_map as pm
@@ -19,8 +25,13 @@ EDGE_OK = "rgba(139,139,139,0.30)"
 BOX, TEXT, MUTED = "#1c1c1c", "#f7f8fa", "#8b8b8b"
 X = {"provider": 0.0, "job": 1.0, "db": 2.0, "tab": 3.0}
 W = {"provider": 0.62, "job": 0.62, "db": 0.62, "tab": 0.5}
-HEADERS = {"provider": "1  Where it comes from", "job": "2  What fetches it, how often",
-           "db": "3  Where it is stored", "tab": "4  Where you see it"}
+HEADERS = {"provider": "1) Where it comes from", "job": "2) What fetches it, how often",
+           "db": "3) Where it is stored", "tab": "4) Where you see it"}
+ACCENT = "#f7931a"                       # the header logo's orange
+UNIT = 27                                # px per layout unit (one provider row)
+PX_X = {"provider": 16, "job": 356, "db": 696, "tab": 1036}   # left edge of each column, px
+PX_W = {"provider": 240, "job": 240, "db": 240, "tab": 200}
+WIDTH = 1252
 ROW = 1.0          # provider row pitch (data units)
 GAP = 0.9          # extra space above each provider category
 
@@ -84,94 +95,215 @@ def _detail(m: dict, col: str, i: str) -> str:
     return "<br>".join(out)
 
 
-def figure(h: pd.DataFrame) -> tuple[go.Figure, dict]:
+
+def model(h: pd.DataFrame) -> dict:
+    """Everything the component draws, in pixels."""
     m = pm.build(h)
     L = _layout(m)
-    pos = L["pos"]
-    shapes, ann = [], []
-    # lines first (below the boxes), problems on top of healthy ones
-    e = m["edges"].assign(r=lambda d: d["status"].map(pm.RANK)).sort_values("r")
-    for r in e.itertuples():
-        (y0, _), (y1, _) = pos[(r.src_col, r.src)], pos[(r.dst_col, r.dst)]
-        x0, x1 = X[r.src_col] + W[r.src_col] / 2, X[r.dst_col] - W[r.dst_col] / 2
-        xm = (x0 + x1) / 2
-        ok = r.status == "OK"
-        shapes.append(dict(type="path", path=f"M {x0},{y0} C {xm},{y0} {xm},{y1} {x1},{y1}", layer="below",
-                           line=dict(color=EDGE_OK if ok else COLOR[r.status], width=1.1 if ok else 2.2)))
-    hx, hy, htext, hdata = [], [], [], []
+    top = L["ylim"][1]
+    rows = m["rows"]
+
+    def py(y):                           # 34 px strip on top for the zoom control
+        return (top - y) * UNIT + 34
+
+    nodes, nid = [], {}
     for col in ("provider", "job", "db", "tab"):
         for r in m["nodes"][col].itertuples():
-            y, hgt = pos[(col, r.id)]
-            x, w = X[col], W[col]
-            c = COLOR[r.status]
-            shapes.append(dict(type="rect", x0=x - w / 2, x1=x + w / 2, y0=y - hgt / 2, y1=y + hgt / 2,
-                               fillcolor=BOX, line=dict(color=c, width=1.6 if r.status != "OK" else 1.0)))
-            shapes.append(dict(type="rect", x0=x - w / 2, x1=x - w / 2 + 0.018, y0=y - hgt / 2, y1=y + hgt / 2,
-                               fillcolor=c, line=dict(width=0)))
-            if col == "job":
-                title, sub = pm.JOBS[r.id]
-            elif col == "db":
-                title, sub = r.id, pm.DBS[r.id]
-            else:
-                title, sub = r.id, None
-            count = _count(r)
-            tone = c if r.status != "OK" else MUTED
-            left = x - w / 2 + 0.04
-            if col == "provider":            # one line: name left, count right
-                ann.append(dict(x=left, y=y, text=f"<b>{title}</b>", xanchor="left", showarrow=False,
-                                font=dict(color=TEXT, size=12)))
-                ann.append(dict(x=x + w / 2 - 0.03, y=y, text=count, xanchor="right", showarrow=False,
-                                font=dict(color=tone, size=11)))
-            else:                            # name, then schedule / contents, then count
-                lines = [f"<b>{title}</b>"] + ([f"<span style='color:{MUTED};font-size:10.5px'>{sub}</span>"]
-                                               if sub else []) + [f"<span style='color:{tone};font-size:10.5px'>{count}</span>"]
-                ann.append(dict(x=left, y=y, text="<br>".join(lines), xanchor="left", yanchor="middle",
-                                showarrow=False, align="left", font=dict(color=TEXT, size=12)))
-            hx.append(x)
-            hy.append(y)
-            hdata.append([col, r.id])
-            htext.append(f"<b>{title}</b><br>{r.n} feeds: {count}<br>{_detail(m, col, r.id)}"
-                         "<br><i>Click to list these feeds below</i>")
-    for col, t in HEADERS.items():
-        ann.append(dict(x=X[col] - W[col] / 2, y=L["ylim"][1] - 0.5, text=f"<b>{t}</b>", xanchor="left",
-                        showarrow=False, font=dict(color=TEXT, size=13)))
-    for cat, y in L["cats"]:
-        ann.append(dict(x=X["provider"] - W["provider"] / 2, y=y, text=cat.upper(), xanchor="left", showarrow=False,
-                        font=dict(color=MUTED, size=10)))
-    fig = go.Figure(go.Scatter(
-        x=hx, y=hy, mode="markers", customdata=hdata, hovertext=htext, hoverinfo="text",
-        marker=dict(symbol="square", size=34, color="rgba(0,0,0,0)"),
-        selected=dict(marker=dict(color="rgba(0,0,0,0)")), unselected=dict(marker=dict(opacity=1))))
-    n_rows = L["ylim"][1] - L["ylim"][0]
-    fig.update_layout(
-        shapes=shapes, annotations=ann, height=int(26 * n_rows) + 40, showlegend=False, dragmode=False,
-        margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        hoverlabel=dict(bgcolor="#262626", bordercolor="#3a3a3a", font=dict(color=TEXT, size=12), align="left"),
-        xaxis=dict(visible=False, range=[-0.36, 3.3], fixedrange=True),
-        yaxis=dict(visible=False, range=list(L["ylim"]), fixedrange=True))
-    return fig, m
+            y, hgt = L["pos"][(col, r.id)]
+            title, sub = (pm.JOBS[r.id] if col == "job" else (r.id, pm.DBS.get(r.id) if col == "db" else None))
+            key = f"{col}:{r.id}"
+            nid[(col, r.id)] = key
+            feeds = h[h["Source"].isin(set(rows.loc[rows[col] == r.id, "source"]))]
+            feeds = feeds.assign(_r=feeds["Status"].map(pm.RANK)).sort_values(["_r", "Source"], ascending=[False, True])
+            nodes.append({
+                "id": key, "col": col, "title": title, "sub": sub, "count": _count(r), "status": r.status,
+                "x": PX_X[col], "w": PX_W[col], "y": py(y) - hgt * UNIT / 2, "h": hgt * UNIT,
+                "detail": _detail(m, col, r.id),
+                "feeds": [list(v) for v in zip(feeds["Status"], feeds["Source"],
+                                               feeds.get("Updated", pd.Series("", index=feeds.index)).fillna(""),
+                                               feeds.get("Last error", pd.Series("", index=feeds.index)).fillna(""))],
+            })
+    pairs = (("provider", "job"), ("job", "db"), ("db", "tab"))
+    edges = [{"id": f"{nid[(r.src_col, r.src)]}|{nid[(r.dst_col, r.dst)]}", "a": nid[(r.src_col, r.src)],
+              "b": nid[(r.dst_col, r.dst)], "status": r.status} for r in m["edges"].itertuples()]
+    # the lines each box's feeds travel, with the worst status of those feeds on each line
+    trace = {}
+    for col in ("provider", "job", "db", "tab"):
+        for i, g in rows.groupby(col):
+            seg = {}
+            for a, b in pairs:
+                for (va, vb), gg in g.drop_duplicates(["source", a, b]).groupby([a, b]):
+                    seg[f"{a}:{va}|{b}:{vb}"] = pm.worst(gg["status"])
+            trace[f"{col}:{i}"] = seg
+    return {"nodes": nodes, "edges": edges, "trace": trace, "width": WIDTH, "height": py(L["ylim"][0]),
+            "headers": [{"x": PX_X[c], "y": py(L["ylim"][1] - 0.5), "text": t} for c, t in HEADERS.items()],
+            "cats": [{"x": PX_X["provider"], "y": py(y), "text": c.upper()} for c, y in L["cats"]],
+            "colors": COLOR, "accent": ACCENT}
 
 
 LEGEND = ("<span style='color:#2fbf71'>■</span> OK &nbsp; <span style='color:#f2a33a'>■</span> Stale &nbsp; "
           "<span style='color:#e5484d'>■</span> Failing &nbsp;·&nbsp; a box or line takes the colour of the worst "
           "feed passing through it, so a problem shows the whole path to the tabs it affects.")
 
+PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><style>
+:root { --text:#f7f8fa; --muted:#8b8b8b; --accent:__ACCENT__; }
+html,body { margin:0; background:transparent; color:var(--text);
+  font-family:"Source Sans Pro","Source Sans 3",Inter,system-ui,-apple-system,sans-serif; }
+#wrap { position:relative; height:__VIEWH__px; overflow:auto; cursor:grab; border-radius:10px;
+  scrollbar-width:thin; scrollbar-color:#3a3a3a transparent; }
+#wrap.drag { cursor:grabbing; user-select:none; }
+#zoom { position:absolute; top:6px; right:14px; z-index:5; display:flex; gap:4px; align-items:center;
+  background:rgba(28,28,28,.92); border:1px solid #2f2f2f; border-radius:9px; padding:3px; }
+#zoom button, #zoom select { background:#262626; color:var(--text); border:1px solid #363636; border-radius:7px;
+  height:26px; font:inherit; font-size:13px; cursor:pointer; }
+#zoom button { width:26px; font-size:15px; line-height:1; padding:0; }
+#zoom button:hover, #zoom select:hover { border-color:var(--accent); }
+#zoom select { padding:0 6px; }
+.node { cursor:pointer; transition:opacity .15s; }
+.node .t { font-size:12.5px; font-weight:700; fill:var(--text); }
+.node .s { font-size:11px; fill:var(--muted); }
+.node .c { font-size:11px; }
+.edge { fill:none; transition:stroke .12s, opacity .12s; }
+svg.hovering .edge { stroke:#4a4a4a !important; opacity:.18; stroke-width:1.1 !important; }
+svg.hovering .edge.on { opacity:1; stroke-width:2.4 !important; }
+svg.hovering .node.off { opacity:.45; }
+.hdr { font-size:15px; font-weight:700; fill:var(--accent); }
+.cat { font-size:10.5px; letter-spacing:.08em; fill:var(--muted); }
+#panel { position:absolute; top:44px; right:14px; width:420px; max-height:calc(100% - 60px); display:none; z-index:6;
+  flex-direction:column; background:linear-gradient(180deg,#262626,#1b1b1b); border:1px solid #333;
+  border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.5); overflow:hidden; }
+#panel.open { display:flex; }
+#panel .hd { padding:12px 14px 8px; border-bottom:1px solid #2e2e2e; }
+#panel .hd b { font-size:15px; } #panel .x { float:right; cursor:pointer; color:var(--muted); font-size:18px; line-height:1; }
+#panel .x:hover { color:var(--text); }
+#panel .meta { font-size:12.5px; color:#c9c9c9; line-height:1.55; margin-top:6px; }
+#panel .cnt { font-size:12.5px; margin-top:2px; }
+#panel .feeds { overflow:auto; font-size:12px; }
+#panel table { width:100%; border-collapse:collapse; }
+#panel th { position:sticky; top:0; background:#1f1f1f; color:var(--muted); font-weight:600; text-align:left;
+  padding:6px 10px; border-bottom:1px solid #2e2e2e; }
+#panel td { padding:5px 10px; border-bottom:1px solid #252525; vertical-align:top; word-break:break-word; }
+#panel td.e { color:#e9a0a0; }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+</style></head><body>
+<div id="wrap"><svg id="svg"></svg></div>
+<div id="zoom"><button id="zo" title="Zoom out">−</button>
+<select id="zs" title="Zoom">__OPTS__</select><button id="zi" title="Zoom in">+</button></div>
+<div id="panel"><div class="hd"><span class="x" id="px">×</span><b id="pt"></b><div class="cnt" id="pc"></div>
+<div class="meta" id="pm"></div></div><div class="feeds"><table><thead><tr><th>Status</th><th>Feed</th>
+<th>Updated</th><th>Last error</th></tr></thead><tbody id="pf"></tbody></table></div></div>
+<script>
+const D = __DATA__, NS = "http://www.w3.org/2000/svg", C = D.colors, OKE = "rgba(139,139,139,0.30)";
+const svg = document.getElementById("svg"), wrap = document.getElementById("wrap");
+const el = (t, a, p) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); (p||svg).appendChild(e); return e; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const defs = el("defs", {});
+const g1 = el("linearGradient", {id:"fill", x1:0, y1:0, x2:0, y2:1}, defs);
+el("stop", {offset:"0%", "stop-color":"#2b2b2b"}, g1); el("stop", {offset:"100%", "stop-color":"#171717"}, g1);
+const g2 = el("linearGradient", {id:"gloss", x1:0, y1:0, x2:0, y2:1}, defs);
+el("stop", {offset:"0%", "stop-color":"#ffffff", "stop-opacity":.10}, g2); el("stop", {offset:"100%", "stop-color":"#ffffff", "stop-opacity":0}, g2);
+const fl = el("filter", {id:"sh", x:"-10%", y:"-20%", width:"120%", height:"150%"}, defs);
+el("feDropShadow", {dx:0, dy:2, stdDeviation:2.5, "flood-color":"#000", "flood-opacity":.45}, fl);
+const N = {}; D.nodes.forEach(n => N[n.id] = n);
+const gE = el("g", {}), gN = el("g", {});
+const E = {};
+const base = s => s === "OK" ? OKE : C[s];
+const order = {OK:0, Stale:1, Failing:2};
+[...D.edges].sort((a,b) => order[a.status]-order[b.status]).forEach(e => {
+  const a = N[e.a], b = N[e.b], x0 = a.x + a.w, y0 = a.y + a.h/2, x1 = b.x, y1 = b.y + b.h/2, xm = (x0+x1)/2;
+  const ok = e.status === "OK";
+  E[e.id] = el("path", {d:`M${x0},${y0} C${xm},${y0} ${xm},${y1} ${x1},${y1}`, class:"edge",
+    stroke: base(e.status), "stroke-width": ok ? 1.1 : 2.2}, gE);
+});
+D.headers.forEach(h => el("text", {x:h.x, y:h.y, class:"hdr"}).textContent = h.text);
+D.cats.forEach(c => el("text", {x:c.x, y:c.y, class:"cat"}).textContent = c.text);
+D.nodes.forEach(n => {
+  const g = el("g", {class:"node", "data-id":n.id}, gN), c = C[n.status], tone = n.status === "OK" ? "#8b8b8b" : c;
+  el("rect", {x:n.x, y:n.y, width:n.w, height:n.h, rx:9, fill:"url(#fill)", filter:"url(#sh)"}, g);
+  el("rect", {x:n.x+1, y:n.y+1, width:n.w-2, height:Math.min(n.h/2, 16), rx:8, fill:"url(#gloss)"}, g);
+  el("rect", {x:n.x+.75, y:n.y+.75, width:n.w-1.5, height:n.h-1.5, rx:8.5, fill:"none", stroke:c,
+              "stroke-width": n.status === "OK" ? 1.2 : 1.8, "stroke-opacity": n.status === "OK" ? .8 : 1}, g);
+  const L = n.x + 12;
+  if (n.col === "provider") {
+    const cy = n.y + n.h/2 + 4;
+    el("text", {x:L, y:cy, class:"t"}, g).textContent = n.title;
+    el("text", {x:n.x+n.w-10, y:cy, class:"c", fill:tone, "text-anchor":"end"}, g).textContent = n.count;
+  } else {
+    const lines = [[n.title, "t", null]].concat(n.sub ? [[n.sub, "s", null]] : [], [[n.count, "c", tone]]);
+    const lh = 15, y0 = n.y + n.h/2 - (lines.length-1)*lh/2 + 4;
+    lines.forEach(([t, k, f], i) => { const a = {x:L, y:y0 + i*lh, class:k}; if (f) a.fill = f; el("text", a, g).textContent = t; });
+  }
+  g.addEventListener("mouseenter", () => hover(n.id));
+  g.addEventListener("mouseleave", () => hover(null));
+  g.addEventListener("click", ev => { if (!moved) open(n); });
+});
+function hover(id) {
+  svg.classList.toggle("hovering", !!id);
+  Object.values(E).forEach(p => { p.classList.remove("on"); });
+  document.querySelectorAll(".node").forEach(g => g.classList.toggle("off", !!id && g.dataset.id !== id));
+  if (!id) { Object.entries(E).forEach(([k,p]) => p.style.stroke = ""); return; }
+  const on = new Set([id]);
+  Object.entries(D.trace[id] || {}).forEach(([k, s]) => {
+    const p = E[k]; if (!p) return; p.classList.add("on"); p.style.setProperty("stroke", C[s], "important");
+    k.split("|").forEach(x => on.add(x));
+  });
+  document.querySelectorAll(".node").forEach(g => g.classList.toggle("off", !on.has(g.dataset.id)));
+}
+// panel
+const P = document.getElementById("panel");
+function open(n) {
+  document.getElementById("pt").textContent = n.title + (n.sub ? " · " + n.sub : "");
+  const pc = document.getElementById("pc"); pc.textContent = n.feeds.length + (n.feeds.length === 1 ? " feed: " : " feeds: ") + n.count;
+  pc.style.color = n.status === "OK" ? "#8b8b8b" : C[n.status];
+  document.getElementById("pm").innerHTML = n.detail;
+  document.getElementById("pf").innerHTML = n.feeds.map(([s, src, up, err]) =>
+    `<tr><td><span class="dot" style="background:${C[s]}"></span>${s}</td><td>${esc(src)}</td><td>${esc(up)}</td>` +
+    `<td class="e">${esc(err)}</td></tr>`).join("");
+  P.classList.add("open");
+}
+document.getElementById("px").onclick = () => P.classList.remove("open");
+// zoom and drag
+let scale = 1;
+const zs = document.getElementById("zs"), steps = [...zs.options].map(o => +o.value);
+function zoom(s, cx, cy) {
+  const r = wrap.getBoundingClientRect(); cx = cx ?? r.width/2; cy = cy ?? r.height/2;
+  const fx = (wrap.scrollLeft + cx) / scale, fy = (wrap.scrollTop + cy) / scale;
+  scale = s; zs.value = String(s);
+  svg.setAttribute("width", D.width * s); svg.setAttribute("height", D.height * s);
+  wrap.scrollLeft = fx * s - cx; wrap.scrollTop = fy * s - cy;
+}
+svg.setAttribute("viewBox", `0 0 ${D.width} ${D.height}`);
+zoom(1);
+zs.onchange = () => zoom(+zs.value);
+document.getElementById("zi").onclick = () => zoom(steps.find(v => v > scale) ?? scale);
+document.getElementById("zo").onclick = () => zoom([...steps].reverse().find(v => v < scale) ?? scale);
+let drag = null, moved = false;
+wrap.addEventListener("mousedown", e => { drag = {x:e.clientX, y:e.clientY, l:wrap.scrollLeft, t:wrap.scrollTop}; moved = false; });
+window.addEventListener("mousemove", e => {
+  if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; wrap.classList.add("drag"); }
+  wrap.scrollLeft = drag.l - dx; wrap.scrollTop = drag.t - dy;
+});
+window.addEventListener("mouseup", () => { drag = null; wrap.classList.remove("drag"); setTimeout(() => moved = false, 0); });
+</script></body></html>"""
 
-def render(h: pd.DataFrame, table) -> None:
-    """Draw the diagram; `table(df)` shows the feeds of the box that was clicked."""
+
+def page(h: pd.DataFrame) -> tuple[str, int]:
+    d = model(h)
+    view_h = int(d["height"]) + 8
+    opts = "".join(f'<option value="{v}"{" selected" if v == 1 else ""}>{int(v * 100)}%</option>'
+                   for v in (0.5, 0.75, 1, 1.25, 1.5, 2))
+    out = (PAGE.replace("__DATA__", json.dumps(d).replace("</", "<\\/")).replace("__ACCENT__", ACCENT)
+               .replace("__VIEWH__", str(view_h)).replace("__OPTS__", opts))
+    return out, view_h
+
+
+def render(h: pd.DataFrame) -> None:
     st.markdown("##### How the data flows")
     st.caption("Every source the dashboard uses, left to right: who serves it, which recorder job fetches it and "
-               "how often, where it is stored, and which tabs read it. Hover a box for details; click one to list "
-               "its feeds below (click empty space to clear).")
+               "how often, where it is stored, and which tabs read it. Hover a box to light up the lines its feeds "
+               "travel; click it for details and its feeds. Zoom with the control at the top right and drag to move.")
     st.markdown(f"<div style='font-size:0.8rem;color:{MUTED};margin:-4px 0 4px 0'>{LEGEND}</div>",
                 unsafe_allow_html=True)
-    fig, m = figure(h)
-    ev = st.plotly_chart(fig, width="stretch", key="dh-pipeline", on_select="rerun", selection_mode="points",
-                         config={"displayModeBar": False})
-    pts = (ev or {}).get("selection", {}).get("points", []) if isinstance(ev, dict) or hasattr(ev, "get") else []
-    if pts and pts[0].get("customdata"):
-        col, i = pts[0]["customdata"][:2]
-        name = pm.JOBS[i][0] if col == "job" else i
-        srcs = list(dict.fromkeys(m["rows"].loc[m["rows"][col] == i, "source"]))
-        st.markdown(f"**Feeds behind {name}** ({len(srcs)})")
-        table(h[h["Source"].isin(srcs)])
+    doc, view_h = page(h)
+    components.html(doc, height=view_h, scrolling=False)

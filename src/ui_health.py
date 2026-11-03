@@ -82,8 +82,7 @@ def render(con, recorder_state: str) -> None:
         st.caption("Nothing fetched yet.")
         return
     _cards(h, recorder_state)
-    ui_pipeline.render(h, lambda df: _table(df, ["Status", "Group", "Source", "Expected", "Updated", "Last success",
-                                                 "Last error"]))
+    ui_pipeline.render(h)
 
     bad = h[h["Status"] != "OK"]
     st.markdown("##### Needs attention")

@@ -61,6 +61,14 @@ def test_counts_are_feeds_not_rows():
     assert m["nodes"]["tab"].set_index("id").loc["Trade review", "n"] == 2
 
 
-def test_figure_draws_every_node():
-    fig, m = ui_pipeline.figure(_h(failing={"src:cftc"}))
-    assert len(fig.data[0].x) == sum(len(d) for d in m["nodes"].values())
+def test_component_has_every_node_and_highlight_paths():
+    d = ui_pipeline.model(_h(failing={"src:cftc"}))
+    assert len(d["nodes"]) == sum(1 for _ in d["nodes"]) and {n["col"] for n in d["nodes"]} == set(ui_pipeline.X)
+    assert [hd["text"][:2] for hd in d["headers"]] == ["1)", "2)", "3)", "4)"]
+    cftc = d["trace"]["provider:CFTC"]                 # hovering CFTC lights exactly its path, in its colour
+    assert cftc == {"provider:CFTC|job:sources": "Failing", "job:sources|db:market.db": "Failing",
+                    "db:market.db|tab:Studio": "Failing"}
+    node = next(n for n in d["nodes"] if n["id"] == "provider:CFTC")
+    assert node["feeds"][0][:2] == ["Failing", "src:cftc"]          # details only exist in the click panel
+    doc, height = ui_pipeline.page(_h())
+    assert "__" not in doc.split("<script>")[0] and height > 600
