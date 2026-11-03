@@ -149,7 +149,7 @@ PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><style>
 :root { --text:#f7f8fa; --muted:#8b8b8b; --accent:__ACCENT__; }
 html,body { margin:0; background:transparent; color:var(--text);
   font-family:"Source Sans Pro","Source Sans 3",Inter,system-ui,-apple-system,sans-serif; }
-#wrap { position:relative; height:__VIEWH__px; overflow:auto; cursor:grab; border-radius:10px;
+#wrap { position:relative; height:__VIEWH__px; overflow:auto; cursor:grab; border-radius:10px; margin-right:0;
   scrollbar-width:thin; scrollbar-color:#3a3a3a transparent; }
 #wrap.drag { cursor:grabbing; user-select:none; }
 #zoom { position:absolute; top:6px; right:14px; z-index:5; display:flex; gap:4px; align-items:center;
@@ -169,7 +169,7 @@ svg.hovering .edge.on { opacity:1; stroke-width:2.4 !important; }
 svg.hovering .node.off { opacity:.45; }
 .hdr { font-size:15px; font-weight:700; fill:var(--accent); }
 .cat { font-size:10.5px; letter-spacing:.08em; fill:var(--muted); }
-#panel { position:absolute; top:44px; right:14px; width:420px; max-height:calc(100% - 60px); display:none; z-index:6;
+#panel { position:absolute; top:44px; right:8px; width:var(--pw,380px); max-height:calc(100% - 52px); display:none; z-index:6;
   flex-direction:column; background:linear-gradient(180deg,#262626,#1b1b1b); border:1px solid #333;
   border-radius:12px; box-shadow:0 12px 32px rgba(0,0,0,.5); overflow:hidden; }
 #panel.open { display:flex; }
@@ -259,24 +259,48 @@ function open(n) {
   document.getElementById("pf").innerHTML = n.feeds.map(([s, src, up, err]) =>
     `<tr><td><span class="dot" style="background:${C[s]}"></span>${s}</td><td>${esc(src)}</td><td>${esc(up)}</td>` +
     `<td class="e">${esc(err)}</td></tr>`).join("");
+  if (!P.classList.contains("open")) userScale = scale;
   P.classList.add("open");
+  layoutPanel();
 }
-document.getElementById("px").onclick = () => P.classList.remove("open");
+// The panel is a sidebar sized to the window; while it is open the diagram shrinks
+// to the space left beside it (never covering the last column), then gets its zoom back.
+let userScale = null;
+const GAP = 16;
+function panelWidth() { return Math.round(Math.max(280, Math.min(420, window.innerWidth * 0.3))); }
+function layoutPanel() {
+  if (!P.classList.contains("open")) return;
+  const pw = panelWidth();
+  document.documentElement.style.setProperty("--pw", pw + "px");
+  wrap.style.marginRight = (pw + GAP) + "px";
+  const room = wrap.clientWidth - 4, fit = Math.min(userScale ?? scale, room / D.width);
+  zoom(Math.max(0.3, fit));
+}
+document.getElementById("px").onclick = () => {
+  P.classList.remove("open"); wrap.style.marginRight = "0";
+  if (userScale !== null) { const s = userScale; userScale = null; zoom(s); }
+};
+window.addEventListener("resize", layoutPanel);
 // zoom and drag
 let scale = 1;
 const zs = document.getElementById("zs"), steps = [...zs.options].map(o => +o.value);
+const userZoom = s => { zoom(s); if (P.classList.contains("open")) userScale = s; };
 function zoom(s, cx, cy) {
   const r = wrap.getBoundingClientRect(); cx = cx ?? r.width/2; cy = cy ?? r.height/2;
   const fx = (wrap.scrollLeft + cx) / scale, fy = (wrap.scrollTop + cy) / scale;
-  scale = s; zs.value = String(s);
+  scale = s;
+  let o = [...zs.options].find(o => +o.value === s);
+  zs.querySelectorAll("option.fit").forEach(x => { if (x !== o) x.remove(); });
+  if (!o) { o = new Option(Math.round(s * 100) + "%", String(s)); o.className = "fit"; zs.add(o, 0); }
+  zs.value = String(s);
   svg.setAttribute("width", D.width * s); svg.setAttribute("height", D.height * s);
   wrap.scrollLeft = fx * s - cx; wrap.scrollTop = fy * s - cy;
 }
 svg.setAttribute("viewBox", `0 0 ${D.width} ${D.height}`);
 zoom(1);
-zs.onchange = () => zoom(+zs.value);
-document.getElementById("zi").onclick = () => zoom(steps.find(v => v > scale) ?? scale);
-document.getElementById("zo").onclick = () => zoom([...steps].reverse().find(v => v < scale) ?? scale);
+zs.onchange = () => { zoom(+zs.value); if (P.classList.contains("open")) userScale = +zs.value; };
+document.getElementById("zi").onclick = () => userZoom(steps.find(v => v > scale) ?? scale);
+document.getElementById("zo").onclick = () => userZoom([...steps].reverse().find(v => v < scale) ?? scale);
 let drag = null, moved = false;
 wrap.addEventListener("mousedown", e => { drag = {x:e.clientX, y:e.clientY, l:wrap.scrollLeft, t:wrap.scrollTop}; moved = false; });
 window.addEventListener("mousemove", e => {
