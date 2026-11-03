@@ -157,3 +157,11 @@ def test_reset_view_bumps_uirevision(monkeypatch):
     chart_reset._bump("x")                      # what the button does
     draw(go.Figure(), key="x")
     assert drawn == ["x-0", "x-1"]               # new revision -> Plotly drops the zoom
+
+
+def test_times_are_shown_in_montreal_time():
+    from src.localtime import fmt, fmt_col
+    assert fmt("2026-11-03T21:19:00+00:00") == "03 Nov 16:19 EST"
+    assert fmt(pd.Timestamp("2026-07-01 12:00")) == "01 Jul 08:00 EDT"          # naive = UTC; summer is EDT
+    s = fmt_col(pd.Series([pd.Timestamp("2026-11-03T21:19Z"), pd.NaT]))
+    assert s.iloc[0] == "03 Nov 16:19 EST" and pd.isna(s.iloc[1])

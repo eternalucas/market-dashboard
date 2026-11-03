@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from .localtime import fmt
 from .review import backtest as bt
 from .review import costs as cst
 from .review import jobs
@@ -76,7 +77,7 @@ def render(rcon, addr: str, n_closed: int, own_fees: dict, diag: dict | None, ve
         c2.caption("Not run yet with these assumptions." + (
             " Showing the last finished run (different assumptions or older data) below." if prev else ""))
     elif run["status"] == "done":
-        c2.caption(f"Cached result from {pd.Timestamp(run['finished']):%d %b %H:%M} UTC for these assumptions and "
+        c2.caption(f"Cached result from {fmt(run['finished'])} for these assumptions and "
                    "this data. It reruns automatically when new fills are synced or an assumption changes.")
     if go_:
         jobs.start(venue, addr, window, a)

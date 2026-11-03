@@ -18,6 +18,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from .localtime import fmt
 from . import storage, views
 from .indicators import onchain as oc
 
@@ -147,7 +148,7 @@ def watched_wallets(con, wl: pd.DataFrame, category_names: dict, colors: dict) -
     stale = have[have["Stale"]]
     have = have[~have["Stale"]]          # totals and charts count current readings only
     px = _live_prices(con)
-    px_note = "; ".join(f"{ch.upper()} ${p:,.0f} as of {ts:%d %b %H:%M} UTC" for ch, (p, ts) in px.items() if ts is not None)
+    px_note = "; ".join(f"{ch.upper()} ${p:,.0f} as of {fmt(ts)}" for ch, (p, ts) in px.items() if ts is not None)
     k = st.columns(4)
     k[0].metric("Wallets watched", f"{len(wl)}", help="Bitcoin and Ethereum")
     k[1].metric("Entities", f"{wl['entity'].nunique()}")
@@ -259,7 +260,7 @@ def _btc_flows(con, wl: pd.DataFrame, category_names: dict, colors: dict) -> Non
     sel_groups = [group] if group != ALL else sorted(set(pool["group"]))
     partial = {g: groups_cov.get(g) for g in sel_groups if groups_cov.get(g) and pd.Timestamp(groups_cov[g]) > start}
     if partial:
-        names = ", ".join(f"{g} (from {pd.Timestamp(t):%d %b %H:%M} UTC)" for g, t in list(partial.items())[:6])
+        names = ", ".join(f"{g} (from {fmt(t)})" for g, t in list(partial.items())[:6])
         st.caption(f"⚠️ History isn't complete over the whole window for {len(partial)} of {len(sel_groups)} "
                    f"selected entities, so their flows only count from then: {names}"
                    f"{'…' if len(partial) > 6 else ''}. Coverage fills in as the hourly sync runs.")
@@ -388,7 +389,7 @@ def _btc_flows(con, wl: pd.DataFrame, category_names: dict, colors: dict) -> Non
                          "link": st.column_config.LinkColumn("Transaction", display_text=r"tx/(.{10})",
                                                              help="Opens on mempool.space")})
     st.caption(f"Synced hourly by the recorder (every new transaction since the last sync); last sync "
-               f"{pd.Timestamp(meta['last_sync']):%d %b %H:%M} UTC." if meta["last_sync"] else
+               f"{fmt(meta['last_sync'])}." if meta["last_sync"] else
                "The hourly sync hasn't run yet; it starts with the recorder.")
 
 

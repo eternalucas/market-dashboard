@@ -8,6 +8,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from .localtime import fmt
 from . import storage
 
 CSS = """
@@ -55,7 +56,7 @@ def render(con, recorder_state: str = "") -> None:
     recording = recorder_state in ("started", "already running", "running elsewhere")
     dot = "#2fbf71" if recording else "#8b8b8b"
     state = "Recording" if recording else "Recorder off"
-    when = f"Last fetch <b>{last:%d %b %H:%M} UTC</b>" if last is not None else "No data yet"
+    when = f"Last fetch <b>{fmt(last)}</b>" if last is not None else "No data yet"
     st.markdown(
         f'<div class="md-header"><div class="md-brand">'
         f'<div class="md-mark"><i style="height:9px"></i><i style="height:15px"></i><i style="height:12px"></i></div>'

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from .localtime import fmt_col
 from . import views
 
 BADGE = {"OK": "🟢 OK", "Stale": "🟠 Stale", "Failing": "🔴 Failing"}
@@ -68,7 +69,7 @@ def _table(df: pd.DataFrame, cols: list[str], height: int | None = None) -> None
         show["Status"] = show["Status"].map(BADGE)
     for c in ("Last success", "Last attempt"):
         if c in show:
-            show[c] = show[c].dt.strftime("%d %b %H:%M UTC").fillna("never")
+            show[c] = fmt_col(show[c]).fillna("never")
     st.dataframe(show, hide_index=True, width="stretch", height=height or min(35 * len(show) + 38, 520),
                  column_config={"Last error": st.column_config.TextColumn(width="large"),
                                 "Source": st.column_config.TextColumn(width="medium")})

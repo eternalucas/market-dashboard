@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from .localtime import fmt
 from .review import batch, jobs, store
 from .review import costs as cst
 
@@ -58,7 +59,7 @@ def render(rcon, el) -> None:
                    "(prices for every trader's markets are loaded once); later runs reuse stored results.")
         _progress(bid)
     elif run and run["status"] == "done":
-        c2.caption(f"Last run finished {pd.Timestamp(run['finished']):%d %b %H:%M} UTC. Click to run again (a new run "
+        c2.caption(f"Last run finished {fmt(run['finished'])}. Click to run again (a new run "
                    "at most once a day; each trader's own result is reused while their data is unchanged).")
     elif run and run["status"] == "error":
         c2.error(f"The last run stopped: {run['message']}")

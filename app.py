@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src import events as ev
-from src import flows, pipeline, recorder, storage, ui_flows, views  # noqa: F401
+from src import flows, localtime, pipeline, recorder, storage, ui_flows, views  # noqa: F401
 from src.config import load_config
 from src.indicators import positioning as pos
 
@@ -141,7 +141,7 @@ with st.sidebar:
     _update_progress()
     log = storage.fetch_log(con, limit=1)
     if not log.empty:
-        st.caption(f"Last fetch: {pd.to_datetime(log['ts'].iloc[0]).strftime('%Y-%m-%d %H:%M UTC')}")
+        st.caption(f"Last fetch: {localtime.fmt(log['ts'].iloc[0], '%Y-%m-%d %H:%M')}")
     st.caption("While the dashboard (or Start Recorder) is open, the recorder runs every part of this update on "
                "its own schedule: live data every 1-15 minutes, prices, history, sources and positioning for every "
                "asset hourly or daily as each one is due. Data health shows anything that falls behind. Use the "
