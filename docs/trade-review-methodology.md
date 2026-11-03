@@ -9,7 +9,7 @@ overwrite actual data.
 
 | What | Source | Limit |
 |---|---|---|
-| Fills, funding payments, ledger, account value history | Hyperliquid public info API | 10,000 most recent fills per wallet; wallets that hit it are flagged "history truncated" |
+| Fills, funding payments, ledger, account value history | Hyperliquid public info API | Fills are fetched back from now in time windows (2,000 per page, deduplicated by trade id) until the venue's start: the venue limits what one query reaches, not what a wallet has (35,491 fills of one wallet served for 1–27 Oct 2026). A wallet whose fills cover < 98% of its all-time volume is flagged "history truncated" and ranked only on windows its fills fully cover |
 | Candles | Hyperliquid `candleSnapshot` | Only the most recent 5,000 per interval: 1m ≈ 3.5 days, 15m ≈ 52 days, 1h ≈ 208 days, 4h ≈ 833 days, 1d all |
 | Market funding | Hyperliquid `fundingHistory` | Loaded for the last 60 days; older entries use the rate on the account's own payments |
 | Order book history | none free | Slippage is a proxy (Diagnosis) or a model (Backtest) |
@@ -29,6 +29,38 @@ and side). Fills of a position opened before the stored history, funding
 outside any trip, and positions that changed without a fill are counted in
 Data quality, not dropped silently. Each trip keeps its own part of every
 fill ("legs") for the replay engine.
+
+Fill order: by time; fills of one market in the same millisecond are ordered
+so their positions chain (each fill's start position + signed size = the
+next fill's start position), because Hyperliquid's trade ids are not
+sequential within a millisecond. The trade id only breaks ties the chain
+can't decide. Ordering by trade id alone created false "position changed
+without a fill" gaps (81 on one audited wallet, 0 after).
+
+## 2b. Returns and the ledger (`src/review/equity.py`)
+
+Daily return (time-weighted, transfer-adjusted):
+r_d = (equity_d − equity_{d−1} − net external transfers_d) / equity_{d−1},
+compounded for ROE and used for Sharpe, Sortino and % drawdown. Equity is
+Hyperliquid's account-value history (perp + spot), its last observation of
+each UTC day. Transfers come from `userNonFundingLedgerUpdates`, fetched
+incrementally at every sync (`tr_ledger`, paged by time, under the same
+rate limiter). A transfer belongs to the day of the first equity observation
+that includes it. A day without its own equity observation (or right after
+one) uses pnl_d / equity_{d−1}; a day beyond ±500% is dropped and counted
+(`return_days_dropped`). Accounts without ledger data are flagged "returns
+not transfer-adjusted".
+
+| Ledger type | Counted as an external flow? | Sign (+ = into the account) |
+|---|---|---|
+| deposit | yes | + |
+| withdraw | yes | − (the ~$1 fee is ignored) |
+| internalTransfer, subAccountTransfer, spotTransfer, send | yes, unless both sides are this account (then 0) | − when this account sent it, + when it received it |
+| vaultCreate, vaultDeposit | yes (vault equity is outside the account value) | − |
+| vaultWithdraw (netWithdrawnUsd), vaultDistribution, vaultLeaderCommission, rewardsClaim | yes | + |
+| accountClassTransfer (spot ↔ perp) | no: both sides are in the account value | stored + to perp, − to spot |
+| liquidation | no: a trading loss, already in P&L | stored as 0 |
+| anything else | no (stored if it carries a USD amount) | |
 
 ## 3. Diagnosis (`src/review/diagnosis.py`)
 

@@ -46,6 +46,8 @@ def update(con, api_key: str) -> int:
             rows += storage.save_series(con, f"fred:{sid}", fred.series(sid, api_key, "lin", start="1990-01-01"))
         except Exception as e:  # noqa: BLE001 - one bad id must not stop the rest
             failed.append(f"{sid}: {type(e).__name__}")
+    if failed and not rows:      # nothing worked: the registry logs src:fred_macro ok=0 and retries next hour
+        raise RuntimeError(f"all {len(failed)} series failed: " + "; ".join(failed[:8]))
     if failed:
-        storage.log_fetch(con, "fred_macro:failed", False, 0, "; ".join(failed))
+        storage.log_fetch(con, "fred_macro:failed", False, rows, "; ".join(failed))
     return rows

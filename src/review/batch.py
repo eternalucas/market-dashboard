@@ -42,6 +42,7 @@ def start(venue: str = "hyperliquid", board_window: str = "30d", a: cst.Assumpti
         alive = bid in _THREAD and _THREAD[bid].is_alive()
         if cur and (cur["status"] == "done" or alive):
             return bid
+        jobs.beat(con, bid)                  # first, so the new row is never seen without one
         con.execute("INSERT OR REPLACE INTO tr_backtest_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (bid, venue, "*", board_window, jobs.config_hash(a), "batch", "running", 0.0, "Starting",
                      pd.Timestamp.now(tz="UTC").isoformat(), None, None))
@@ -57,6 +58,7 @@ def start(venue: str = "hyperliquid", board_window: str = "30d", a: cst.Assumpti
 def _run(bid, venue, board_window, a, el):
     con = store.connect()
     last = [0.0]
+    hb = jobs.keep_beating(bid)
 
     def progress(p, msg):
         if time.time() - last[0] > 2 or p >= 1:
@@ -77,6 +79,7 @@ def _run(bid, venue, board_window, a, el):
         jobs._set(con, bid, status="error", message=f"{type(e).__name__}: {e}"[:500],
                   finished=pd.Timestamp.now(tz="UTC").isoformat())
     finally:
+        hb.set()
         con.close()
 
 

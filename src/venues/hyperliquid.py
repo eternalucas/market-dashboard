@@ -3,8 +3,13 @@
 - 1,200 request weight per minute per IP. Most info requests cost 20;
   clearinghouseState costs 2. Fills, funding and ledger add 1 per 20 items
   returned, and candles add 1 per 60.
-- userFillsByTime: at most 2,000 fills per response; only the 10,000 most
-  recent fills of a wallet are available.
+- userFillsByTime: at most 2,000 fills per response. The docs also say only
+  the 10,000 most recent fills are available, but a time-windowed query
+  served 35,491 fills of one wallet for 1-27 Oct 2026 (paged by time), so
+  the limit applies per query, not per wallet. fills() therefore walks back
+  from now in time windows until it reaches the start; a wallet is flagged
+  "history truncated" only when its fills cover < 98% of the venue's
+  all-time volume for it.
 - Time-range responses (funding, ledger) return at most 500 items.
 - candleSnapshot: only the most recent 5,000 candles per interval.
 - The leaderboard is the web app's unofficial stats file. It can change
@@ -25,7 +30,9 @@ STATS_LEADERBOARD = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
 # 1,200 is the venue's limit; the rest of the dashboard also calls Hyperliquid,
 # so the review keeps a third in reserve.
 LIMITER = RateLimiter(per_minute=800)
-FILLS_CAP = 10_000
+FILLS_CAP = None          # no per-wallet cap once queries are windowed (see above); coverage decides truncation
+GENESIS_MS = 1_672_531_200_000   # 1 Jan 2023: before Hyperliquid's first perp fills
+FILL_WINDOW_MS = 30 * 86_400_000
 PER_ITEM = {"userFillsByTime": 20, "userFills": 20, "userFunding": 20, "userNonFundingLedgerUpdates": 20,
             "fundingHistory": 20, "candleSnapshot": 60}
 LIGHT = {"clearinghouseState", "l2Book", "allMids", "spotClearinghouseState"}
@@ -44,7 +51,8 @@ class Hyperliquid(VenueAdapter):
         leaderboard=True, fills_history=True, funding_history=True, liquidations=True, account_state=True,
         candles=True, orderbook_history=False,
         notes={"leaderboard": "Unofficial stats file used by the web app; candidates only, every number is recomputed.",
-               "fills_history": "Only each wallet's 10,000 most recent fills are available (free API).",
+               "fills_history": "Paged back in time windows; a wallet whose fills cover < 98% of its all-time "
+                                "volume is flagged 'history truncated'.",
                "candles": "Only the most recent 5,000 candles per interval: 1m covers ~3.5 days, 1h ~208 days.",
                "orderbook_history": "No historical order book; slippage vs mid only for fills after books are recorded."})
 
@@ -82,22 +90,38 @@ class Hyperliquid(VenueAdapter):
     # ------------------------------------------------------------ fills
     def fills(self, account_id: str, start_ms: int = 0, end_ms: int | None = None,
               max_pages: int | None = None) -> pd.DataFrame:
-        """Fills from start_ms forward, 2,000 per page. Partial fills of one
-        crossing order are combined (aggregateByTime), as the web app shows them."""
-        out, cursor, pages = [], start_ms, 0
-        while True:
-            req = {"type": "userFillsByTime", "user": account_id, "startTime": int(cursor), "aggregateByTime": True}
-            if end_ms:
-                req["endTime"] = int(end_ms)
-            batch = self.info(req)
-            pages += 1
-            if not batch:
-                break
-            out.extend(batch)
-            if len(batch) < 2000 or (max_pages and pages >= max_pages):
-                break
-            cursor = max(f["time"] for f in batch) + 1
-        return normalize_fills(out, account_id)
+        """Every fill from start_ms to end_ms (default now). Walks back from the
+        end in time windows (the venue limits what one query can reach, not
+        what a wallet has); inside a window pages forward by time, 2,000 per
+        page, until a page brings no new trade id. A window that needed one
+        page doubles the next one, so quiet or empty stretches cost little.
+        Partial fills of one crossing order are combined (aggregateByTime), as
+        the web app shows them; that can return fewer than 2,000 per page while
+        more remain, so a short page is not taken as the end."""
+        lo_bound = max(int(start_ms), GENESIS_MS)
+        hi = int(end_ms) if end_ms else int(time.time() * 1000)
+        seen: dict = {}
+        pages, span = 0, FILL_WINDOW_MS
+        while hi >= lo_bound and not (max_pages and pages >= max_pages):
+            lo = max(lo_bound, hi - span)
+            cursor, window_pages, oldest = lo, 0, None
+            while not (max_pages and pages >= max_pages):
+                batch = self.info({"type": "userFillsByTime", "user": account_id, "startTime": int(cursor),
+                                   "endTime": int(hi), "aggregateByTime": True}) or []
+                pages += 1
+                fresh = [f for f in batch if f["tid"] not in seen]
+                if not fresh:
+                    break
+                window_pages += 1
+                seen.update((f["tid"], f) for f in fresh)
+                oldest = min([f["time"] for f in fresh] + ([oldest] if oldest is not None else []))
+                top = max(f["time"] for f in batch)
+                cursor = top if top > cursor else cursor + 1      # same-ms fills across pages: deduped by tid
+            span = span * 2 if window_pages <= 1 else span
+            # if the window's fills start after its beginning, the query may not have reached further
+            # back: the next window ends at the oldest fill found (inclusive, deduplicated by tid)
+            hi = oldest if oldest is not None and oldest > lo else lo - 1
+        return normalize_fills(list(seen.values()), account_id)
 
     def recent_fill_rate(self, account_id: str, hours: int = 24) -> int:
         """Fills in the last `hours` (one call; capped at 2,000). Used to spot
@@ -127,25 +151,9 @@ class Hyperliquid(VenueAdapter):
         return pd.DataFrame(rows, columns=["venue", "account_id", "ts", "coin", "usdc", "position_size", "rate"])
 
     def ledger(self, account_id: str, start_ms: int = 0) -> pd.DataFrame:
-        """Deposits, withdrawals and transfers (signed: + into the account)."""
-        rows = []
-        for x in self._paged("userNonFundingLedgerUpdates", account_id, start_ms):
-            d = x.get("delta", {})
-            kind = d.get("type", "")
-            # deposits/withdrawals carry "usdc"; sends carry "usdcValue"/"amount" (seen live 26 Oct 2026)
-            usdc = d.get("usdc", d.get("usdcValue", d.get("amount") if d.get("token") in (None, "USDC") else None))
-            if usdc is None:
-                continue
-            usdc = float(usdc)
-            if kind in ("withdraw",):
-                usdc = -abs(usdc)
-            elif kind in ("send", "spotTransfer", "subAccountTransfer", "internalTransfer", "accountClassTransfer"):
-                # direction depends on who sent it
-                sender = str(d.get("user", "")).lower()
-                usdc = -abs(usdc) if sender == account_id.lower() and str(d.get("destination", "")).lower() != sender else abs(usdc)
-            rows.append({"venue": self.name, "account_id": account_id, "ts": pd.to_datetime(x["time"], unit="ms", utc=True),
-                         "ref": x.get("hash", "") + ":" + kind, "kind": kind, "usdc": usdc})
-        return pd.DataFrame(rows, columns=["venue", "account_id", "ts", "ref", "kind", "usdc"])
+        """Deposits, withdrawals and transfers (userNonFundingLedgerUpdates),
+        paged by time. usdc is signed from this account's side: + into it."""
+        return normalize_ledger(self._paged("userNonFundingLedgerUpdates", account_id, start_ms), account_id, self.name)
 
     # ------------------------------------------------------------ account
     def account_state(self, account_id: str) -> dict:
@@ -217,3 +225,64 @@ def normalize_fills(raw: list[dict], account_id: str, venue: str = "hyperliquid"
     df = pd.DataFrame(rows, columns=cols)
     df = df.drop_duplicates("fill_id").assign(_o=pd.to_numeric(df["fill_id"], errors="coerce"))
     return df.sort_values(["ts", "_o"], kind="stable").drop(columns="_o").reset_index(drop=True)
+
+
+# Ledger delta types (userNonFundingLedgerUpdates) and what each does to the
+# account value used for returns (Hyperliquid's portfolio account value,
+# perp + spot). EXTERNAL_FLOWS move money into or out of that account value;
+# everything else is stored for the record but is not a flow:
+#   accountClassTransfer  spot <-> perp inside the same account
+#   send to oneself       between the account's own dexes
+#   liquidation           a trading loss, already in P&L
+EXTERNAL_FLOWS = frozenset({"deposit", "withdraw", "internalTransfer", "subAccountTransfer", "spotTransfer", "send",
+                            "vaultCreate", "vaultDeposit", "vaultWithdraw", "vaultDistribution", "vaultLeaderCommission",
+                            "rewardsClaim"})
+_DIRECTED = {"internalTransfer", "subAccountTransfer", "spotTransfer", "send"}
+
+
+def _ledger_value(d: dict) -> float | None:
+    """USD value of one ledger delta (unsigned where the type carries the direction)."""
+    kind = d.get("type", "")
+    if kind == "vaultWithdraw":
+        v = d.get("netWithdrawnUsd", d.get("requestedUsd"))
+    elif kind in ("spotTransfer", "send"):
+        v = d.get("usdcValue", d.get("amount") if d.get("token") in (None, "USDC") else None)
+    else:
+        v = d.get("usdc", d.get("amount") if d.get("token") in (None, "USDC") else None)
+    return None if v is None else float(v)
+
+
+def normalize_ledger(raw: list[dict], account_id: str, venue: str = "hyperliquid") -> pd.DataFrame:
+    """One row per ledger update: kind, usdc signed + into this account. Fees
+    on withdrawals and sends (about $1) are not counted."""
+    cols = ["venue", "account_id", "ts", "ref", "kind", "usdc"]
+    acct = account_id.lower()
+    rows = []
+    for x in raw or []:
+        d = x.get("delta") or {}
+        kind = d.get("type", "")
+        if kind == "liquidation":
+            usdc = 0.0
+        else:
+            usdc = _ledger_value(d)
+            if usdc is None:
+                continue
+        if kind in ("withdraw", "vaultCreate", "vaultDeposit"):
+            usdc = -abs(usdc)
+        elif kind in ("deposit", "vaultWithdraw", "vaultDistribution", "vaultLeaderCommission", "rewardsClaim"):
+            usdc = abs(usdc)
+        elif kind == "accountClassTransfer":                       # + into perp, - into spot (internal)
+            usdc = abs(usdc) if d.get("toPerp", True) else -abs(usdc)
+        elif kind in _DIRECTED:
+            sender, dest = str(d.get("user", "")).lower(), str(d.get("destination", "")).lower()
+            if sender == acct and dest == acct:                    # between its own dexes
+                usdc = 0.0
+            elif sender == acct:
+                usdc = -abs(usdc)
+            elif dest == acct:
+                usdc = abs(usdc)
+            else:                                                  # neither side is this account: not ours
+                continue
+        rows.append({"venue": venue, "account_id": acct, "ts": pd.to_datetime(x["time"], unit="ms", utc=True),
+                     "ref": f"{x.get('hash', '')}:{kind}:{usdc:.6f}", "kind": kind, "usdc": usdc})
+    return pd.DataFrame(rows, columns=cols)

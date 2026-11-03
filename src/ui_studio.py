@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import pandas as pd
 import streamlit as st
 
-from . import catalog, charts, explanations, storage
+from . import catalog, charts, explanations
 from .metrics import Ctx
 
 CSS = f"""
@@ -87,14 +87,17 @@ def panel(con, spec: charts.Spec, opts: charts.Opts, nonce: str, key: str) -> No
             st.markdown(f'<p class="gn-title" title="{spec.title}"><span class="gn-latest">{latest}</span>{spec.title}</p>',
                         unsafe_allow_html=True)
             fig = charts.render(spec, data, _price(con, nonce), opts)
+            stale = charts.last_data_note(data) if spec.kind not in ("xy", "overlay") else ""
         except Exception as e:  # noqa: BLE001 - one broken chart must not blank the dashboard
             st.markdown(f'<p class="gn-title" title="{spec.title}">{spec.title}</p>', unsafe_allow_html=True)
             fig = charts.empty_figure(opts.height, "Not available yet")
-            spec_err = f"{type(e).__name__}: {e}"
+            spec_err, stale = f"{type(e).__name__}: {e}", ""
         else:
             spec_err = ""
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"chart-{key}")
         meta = " · ".join(x for x in (spec.desc, f"Source: {spec.source}") if x)
+        if stale:
+            meta = f'<span class="gn-partial">{stale}</span> · ' + meta     # first: the meta box is clipped
         if spec.partial:
             meta += f' · <span class="gn-partial">Partial: {spec.partial}</span>'
         if spec_err:
@@ -172,7 +175,6 @@ def explain(spec: charts.Spec) -> None:
 def social_extras(con, cfg: dict) -> None:
     """Under the Social Risk dashboard: today's reading, every input's status,
     the evidence tables, and the X impressions log."""
-    from datetime import date
 
     from . import views
     from .indicators import social_risk as sr
@@ -195,6 +197,10 @@ def social_extras(con, cfg: dict) -> None:
             c3.metric("Attention", f"{df['attention'].dropna().iloc[-1]:.2f}" if df["attention"].notna().any() else "-")
             c4.metric("Speculation", f"{df['speculation'].dropna().iloc[-1]:.2f}" if df["speculation"].notna().any() else "-")
             c5.metric("Inputs live", f"{int(df['n_components'].iloc[-1])} of {len(sr.COMPONENTS)}")
+            if as_of < df.index[-1]:
+                dead = [g for g in ("attention", "speculation") if g in df and pd.isna(df[g].iloc[-1])]
+                st.caption(f"Score as of {as_of:%d %b %Y}: since then no live {' or '.join(dead) or 'group'} input, "
+                           "so there is no score (one group alone is not the composite).")
         st.markdown('<p class="gn-meta">Inputs</p>', unsafe_allow_html=True)
         status = views.component_status(df, raw, cfg)
         status["Score"] = status["Score"].map(lambda v: "-" if v is None or pd.isna(v) else f"{v:.2f}")
@@ -230,19 +236,6 @@ def social_extras(con, cfg: dict) -> None:
                              column_config={"Top price": st.column_config.NumberColumn(format="$%.0f"),
                                             "Score at peak": st.column_config.NumberColumn(format="%.2f"),
                                             "Score on top day": st.column_config.NumberColumn(format="%.2f")})
-        with st.expander("Log X impressions", expanded=False):
-            st.caption("X's API is paid, so impressions are entered by hand, e.g. weekly from the analytics page of the "
-                       "accounts or searches you follow. Eight entries per label start that input.")
-            with st.form("x_form", clear_on_submit=True):
-                a, b, c = st.columns(3)
-                label = a.text_input("Label", placeholder="e.g. crypto-timeline")
-                when = b.date_input("Date", value=date.today())
-                value = c.number_input("Impressions", min_value=0, step=1000)
-                if st.form_submit_button("Save") and label.strip():
-                    storage.save_point(con, f"x_impr:{label.strip()}", float(value),
-                                       ts=pd.Timestamp(when, tz="UTC").to_pydatetime())
-                    storage.log_fetch(con, "x_impressions", True, 1)   # new entry -> charts recompute
-                    st.success(f"Saved {value:,.0f} for {label.strip()} on {when}")
 
 
 # --------------------------------------------------------------------------- #
@@ -253,14 +246,23 @@ def social_extras(con, cfg: dict) -> None:
 def _search_index() -> dict[str, tuple[str, str, str, str]]:
     """key -> (label shown, kind, group, name-or-chart-id)."""
     idx: dict[str, tuple[str, str, str, str]] = {}
+    repeated = {n for n in (n for _, n, _ in catalog.DASHBOARDS)
+                if sum(1 for _, m, _ in catalog.DASHBOARDS if m == n) > 1}
     for g, n, _ in catalog.DASHBOARDS:
-        idx[f"d:{g}:{n}"] = (n, "dashboard", g, n)
+        idx[f"d:{g}:{n}"] = (f"{n} ({g})" if n in repeated else n, "dashboard", g, n)
     first_group: dict[str, str] = {}
     for g, _, lst in catalog.DASHBOARDS:
         for sid in lst:
             first_group.setdefault(sid, g)
+    # A chart named like a dashboard that contains it (e.g. "Social Risk") would show
+    # twice under one name; the dashboard entry already leads to it.
+    dash_charts = {(n, sid) for _, n, lst in catalog.DASHBOARDS for sid in lst}
+    dash_names = {n for _, n, _ in catalog.DASHBOARDS}
     for spec in sorted(catalog.SPECS, key=lambda x: x.title.lower()):
-        idx[f"c:{spec.id}"] = (spec.title, "chart", first_group.get(spec.id, ""), spec.id)
+        if (spec.title, spec.id) in dash_charts:
+            continue
+        title = f"{spec.title} (chart)" if spec.title in dash_names else spec.title
+        idx[f"c:{spec.id}"] = (title, "chart", first_group.get(spec.id, ""), spec.id)
     return idx
 
 
@@ -274,15 +276,15 @@ def _go_to_search() -> None:
         return
     _, kind, group, target = SEARCH[key]
     if kind == "dashboard":
-        st.session_state["gn-mode"] = "Dashboards"
-        st.session_state["gn-group"] = group
-        st.session_state["gn-dash"] = target
+        st.session_state["view"] = "Dashboards"
+        st.session_state["section"] = group
+        st.session_state["dashboard"] = target
     else:
-        st.session_state["gn-mode"] = "Charts"
-        st.session_state["gn-cgroup"] = group
-        st.session_state["gn-metric"] = target
+        st.session_state["view"] = "Charts"
+        st.session_state["category"] = group
+        st.session_state["metric"] = target
     st.session_state["gn-search"] = None
-    st.session_state["main-tabs"] = "Studio"          # open the Studio tab
+    st.session_state["tab"] = "Studio"          # open the Studio tab
 
 
 SEARCH_CSS = """
@@ -318,14 +320,14 @@ def render(con, cfg: dict | None = None) -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     nonce = _nonce(con)
     with st.container(key="gn-root"):
-        mode = st.segmented_control("View", ["Dashboards", "Charts"], default="Dashboards", key="gn-mode",
-                                    label_visibility="collapsed")
+        mode = st.segmented_control("View", ["Dashboards", "Charts"], default="Dashboards", key="view",
+                                    label_visibility="collapsed", bind="query-params")
         groups = list(dict.fromkeys(g for g, _, _ in catalog.DASHBOARDS))
         if (mode or "Dashboards") == "Dashboards":
             a, b = st.columns([1, 2])
-            group = a.selectbox("Section", groups, key="gn-group")
+            group = a.selectbox("Section", groups, key="section", bind="query-params")
             names = [n for g, n, _ in catalog.DASHBOARDS if g == group]
-            name = b.selectbox("Dashboard", names, key="gn-dash")
+            name = b.selectbox("Dashboard", names, key="dashboard", bind="query-params")
             ids = next(lst for g, n, lst in catalog.DASHBOARDS if g == group and n == name)
             opts = controls("gn-d")
             opts.height = 330
@@ -349,8 +351,9 @@ def render(con, cfg: dict | None = None) -> None:
                     if sid not in by_group[g]:
                         by_group[g].append(sid)
             a, b = st.columns([1, 2])
-            group = a.selectbox("Category", list(by_group), key="gn-cgroup")
-            sid = b.selectbox("Metric", by_group[group], format_func=lambda x: catalog.BY_ID[x].title, key="gn-metric")
+            group = a.selectbox("Category", list(by_group), key="category", bind="query-params")
+            sid = b.selectbox("Metric", by_group[group], format_func=lambda x: catalog.BY_ID[x].title, key="metric",
+                               bind="query-params")
             opts = controls("gn-c")
             opts.height = 520
             with st.container(key="gn-single"):

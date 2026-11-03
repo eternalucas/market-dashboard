@@ -37,12 +37,8 @@ def test_oi_weighted_funding_scales_hourly_exchanges():
           "Hyperliquid": pd.DataFrame({"c": [0.00125]}, index=T[:1])}   # hourly -> 0.01 per 8h
     oi = {"Binance": pd.DataFrame({"c": [3e9]}, index=T[:1]),
           "Hyperliquid": pd.DataFrame({"c": [1e9]}, index=T[:1])}
-    assert flow.oi_weighted_funding(fr, oi).iloc[0] == pytest.approx(0.01)
-
-
-def test_as_percent_converts_fractions_only():
-    assert flow.as_percent(pd.Series([0.0001, 0.0002])).iloc[0] == pytest.approx(0.01)
-    assert flow.as_percent(pd.Series([0.01, 0.02])).iloc[0] == pytest.approx(0.01)
+    hours = {"Binance": 8.0, "Hyperliquid": 1.0}
+    assert flow.oi_weighted_funding(fr, oi, hours).iloc[0] == pytest.approx(0.01)
 
 
 def test_coinbase_premium():

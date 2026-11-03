@@ -758,7 +758,7 @@ add("stable_chains",
 
 # =========================================================================== Social Risk (own indicator)
 add("social_risk",
-    "Twelve inputs in two groups. Attention (65%): Wikipedia views in English and 12 other languages, Google searches, the App Store ranks of crypto apps, views on crypto YouTube channels, Hacker News mentions, news coverage (GDELT) and any X impressions you log. Speculation (35%): Fear & Greed, perpetual funding, the Altcoin Season Index and the memecoin share of altcoin volume. Each input is turned into a share where a denominator exists (e.g. crypto articles / all news articles), then scored 0-1 by where today sits in its own last two years (a rolling percentile; inputs with a fixed 0-100 scale are rescaled instead). Inputs are weighted within each group, groups are weighted into the score, and a day needs at least 3 inputs to get a score.",
+    "Twelve inputs in two groups. Attention (65%): Wikipedia views in English and 12 other languages, Google searches, the App Store ranks of crypto apps, views on crypto YouTube channels and Hacker News mentions. Speculation (35%): Fear & Greed, perpetual funding, the Altcoin Season Index, the memecoin share of altcoin volume, perp leverage (open interest / market cap) and the perp taker buy share. Each input is turned into a share where a denominator exists (e.g. memecoin volume / altcoin volume), then scored 0-1 by where today sits in its own last two years (a rolling percentile; inputs with a fixed 0-100 scale are rescaled instead). Inputs are weighted within each group, groups are weighted into the score, and a day needs at least 3 inputs to get a score.",
     "Above 0.85 (red) retail attention and risk-taking are at or near two-year highs together, which is what crowded tops have looked like. Below 0.30 (green) nobody is paying attention, which has been typical of bear-market lows. It is a crowding gauge, not a timing signal: attention can stay high for months in a strong bull market, so read it alongside on-chain valuation (MVRV, NUPL) and leverage. The 'Does it work?' tables under this dashboard test it against what BTC did next.")
 add("social_groups",
     "Attention is the weighted mean of the eight attention inputs; Speculation the weighted mean of the four speculation inputs; Social Risk = 0.65 x Attention + 0.35 x Speculation (if one group has no data, the other carries the score).",
@@ -787,12 +787,6 @@ add("social_c_youtube",
 add("social_c_hacker_news",
     "Weekly counts of Hacker News stories and comments mentioning bitcoin, ethereum or cryptocurrency (Algolia's HN search, back to 2011), each scored against its own two years and averaged. Weeks are stamped at their end. Counts are absolute: Algolia's total-item count is an estimate (and swollen by spam since 2025), so there is no reliable denominator; the two-year percentile absorbs the site's slow audience shifts.",
     "A tech-savvy but mostly non-crypto audience. When it starts discussing crypto heavily the topic has gone mainstream in tech. Yearly bitcoin mentions peaked in 2013-14, 2017 and 2021 (comments), and have fallen steadily since as the site's attention moved to AI.")
-add("social_c_news",
-    "GDELT monitors online news worldwide. The daily count of articles mentioning bitcoin, cryptocurrency or crypto, divided by all articles GDELT monitored that day, summed over 7 days and scored against its own history.",
-    "Mainstream coverage follows price; extreme coverage share is what pulls in late buyers. Rises in coverage during crashes are why this input is paired with the speculation group.")
-add("social_c_x_impressions",
-    "Impressions you enter by hand (form below this dashboard), scored against their own history once 8 entries exist; each entry stays valid for 14 days.",
-    "Optional. X's API is paid, so this input only exists if you log it.")
 add("social_c_fear_greed",
     "alternative.me's Fear & Greed Index / 100. Half weight in its group: half of that index is price momentum and volatility, and its social part overlaps the attention inputs.",
     "Above 0.75 = extreme greed. Extreme greed has often persisted through the strongest parts of bull markets, which is why this index alone is a weak top signal.")
@@ -832,21 +826,6 @@ add("social_news",
 add("social_memes",
     "DOGE + SHIB + PEPE volume / the top-50 altcoin volume on Yahoo Finance, 7-day sums, x 100.",
     "Spikes coincide with memecoin manias (DOGE in early 2021, PEPE in 2023, the 2024 memecoin run).")
-
-# =========================================================================== Tokenized equities (own)
-add("ts_issuer_share",
-    "Every tokenized stock CoinGecko lists (its 'Tokenized Stock' category and each issuer's own category) is matched to its issuer: the issuer's category first, otherwise the issuer suffix in CoinGecko's coin id (e.g. '...-ondo-tokenized-stock'). For each token, the five busiest DEX pools on each chain come from GeckoTerminal, and each pool's daily USD volume is credited to the token's issuer. Each bar is the issuer's share of that day's total; a pool is counted once even if both its sides are tokenized stocks.",
-    "Who is winning on-chain trading of tokenized stocks. Shifts are fast because volume follows listings and incentives: a new chain or a DEX campaign can move an issuer's share by tens of points in weeks. Read it with the USD chart: a rising share in a shrinking market means less than it looks.")
-add("ts_issuer_volume",
-    "The same pool volumes as the share chart, in USD, stacked by issuer (the six largest over the last 30 days, the rest grouped as Other).",
-    "The size of on-chain tokenized-equity trading and who carries it. On-chain DEX volume only: centralized-exchange trading of the same tokens isn't included.")
-add("ts_chain_share",
-    "The same pool volumes grouped by the blockchain the pool trades on (GeckoTerminal's network), as a share of the day's total.",
-    "Where tokenized stocks actually trade: Solana DEXs, Ethereum, BNB Chain, Robinhood Chain and others.")
-add("ts_total",
-    "Sum of every tracked pool's daily USD volume, all issuers and chains.",
-    "Overall on-chain demand for tokenized equities. Worth watching around US market events (earnings, index changes) and on weekends, when the underlying stock markets are closed and on-chain venues still trade.")
-
 
 # =========================================================================== Added 27 Oct 2026 (one per odd dashboard)
 add("days_since_ath",
@@ -921,3 +900,13 @@ add("risk_signals",
 add("alt_btc_ratio",
     "Altcoin market cap (total crypto market cap minus BTC's) divided by BTC's market cap.",
     "Rising = money rotating into altcoins relative to bitcoin (altcoin season conditions); falling = bitcoin dominance strengthening.")
+
+add("social_c_leverage",
+    "Perpetual-futures open interest summed over every exchange Coinalyze covers (both margin types, USD at each day's close) divided by Coin Metrics' BTC market cap; 7-day mean, scored against its own two years.",
+    "How much of the market is held with borrowed money. Leverage builds into tops and is flushed in liquidation cascades, so a high reading means the crowd is both bullish and fragile.")
+add("social_c_taker_buys",
+    "Taker-buy volume / total volume of every perpetual Coinalyze covers, 7-day sums, scored against its own two years. A taker buy is an order that crosses the spread to buy now.",
+    "Persistent aggressive buying is impatient, momentum-chasing demand, typical of retail euphoria; sellers in control show up as low readings.")
+add("social_leverage",
+    "Perpetual open interest across all covered exchanges / BTC market cap, in %.",
+    "The raw input behind the Perp Leverage component.")

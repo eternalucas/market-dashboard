@@ -5,6 +5,7 @@ indicator functions. That separation makes it testable with a sample database.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from . import storage
@@ -12,8 +13,8 @@ from .indicators import social_risk as sr
 
 COMPONENT_LABELS = {k: v[0] for k, v in sr.COMPONENTS.items()}
 # How many readings each component needs before it scores (for the status table).
-NEEDED = {"wikipedia_en": 180, "wikipedia_intl": 180, "google_trends": 12, "app_store": 1, "youtube": 97,
-          "hacker_news": 52, "news": 60, "x_impressions": 8, "fear_greed": 1, "funding": 186, "altseason": 1,
+NEEDED = {"wikipedia_en": 180, "wikipedia_intl": 180, "google_trends": 12, "app_store": 1, "youtube": 37,
+          "hacker_news": 52, "fear_greed": 1, "funding": 186, "altseason": 1, "leverage": 186, "taker_buys": 186,
           "memecoins": 186}
 _FRAME_CACHE: dict = {}
 
@@ -61,7 +62,12 @@ def social_inputs(con) -> dict:
         alt = oc.altcoin_season_index(c)
     except Exception:  # noqa: BLE001
         alt = pd.Series(dtype=float)
+    try:
+        perp_oi, perp_vol = fu.open_interest(c), fu.volume(c)
+    except Exception:  # noqa: BLE001 - Coinalyze not loaded yet
+        perp_oi, perp_vol = pd.Series(dtype=float), pd.DataFrame()
     return {
+        "perp_oi": perp_oi, "perp_vol": perp_vol, "mcap": c.mcap(),
         "wiki_en": en, "wiki_intl": intl,
         "wiki_totals_en": {k: totals.get("en.wikipedia") for k in en if totals.get("en.wikipedia") is not None},
         "wiki_totals_intl": {k: totals.get(f"{k.split(':', 1)[0]}.wikipedia") for k in intl
@@ -74,7 +80,6 @@ def social_inputs(con) -> dict:
         "hn": _strip(storage.load_prefix(con, "hn:"), "hn:"),
         "gdelt_count": storage.load_series(con, "gdelt:count"),
         "gdelt_total": storage.load_series(con, "gdelt:total"),
-        "x_impressions": _strip(storage.load_prefix(con, "x_impr:"), "x_impr:"),
         "fng": storage.load_series(con, "fng"),
         "funding": funding,
         "altseason": alt,
@@ -100,12 +105,13 @@ def social_risk_frame(con, cfg) -> tuple[pd.DataFrame, dict]:
         "app_store": sr.app_store_component_v2(raw["app_overall"], raw["app_finance"]),
         "youtube": sr.youtube_views_component(raw["yt_views"], raw["yt_subs"], win),
         "hacker_news": sr.hacker_news_component(raw["hn"], win),
-        "news": sr.news_component(raw["gdelt_count"], raw["gdelt_total"], win),
-        "x_impressions": sr.x_component(raw["x_impressions"], win),
         "fear_greed": sr.fixed_scale(raw["fng"]),
         "funding": sr.funding_component(raw["funding"], win, min_obs) if not raw["funding"].empty else pd.Series(dtype=float),
         "altseason": sr.fixed_scale(raw["altseason"]),
         "memecoins": sr.memecoin_component(raw["alt_volumes"], win, min_obs),
+        "leverage": sr.leverage_component(raw["perp_oi"], raw["mcap"], win, min_obs),
+        "taker_buys": (sr.taker_buy_component(raw["perp_vol"]["buy"], raw["perp_vol"]["total"], win, min_obs)
+                       if not raw["perp_vol"].empty else pd.Series(dtype=float)),
     }
     df = sr.grouped_composite(components, scfg.get("component_weights"), scfg.get("group_weights"))
     if "score" in df and df["score"].notna().any():
@@ -122,8 +128,9 @@ def component_status(df: pd.DataFrame, raw: dict, cfg) -> pd.DataFrame:
         "google_trends": {**raw["trends_weekly"], **raw["trends_monthly"]},
         "app_store": {**raw["app_overall"], **raw["app_finance"]},
         "youtube": raw["yt_views"], "hacker_news": raw["hn"],
-        "news": {"gdelt": raw["gdelt_count"]} if not raw["gdelt_count"].empty else {},
-        "x_impressions": raw["x_impressions"], "fear_greed": {"fng": raw["fng"]} if not raw["fng"].empty else {},
+        "leverage": {"oi": raw["perp_oi"]} if not raw["perp_oi"].empty else {},
+        "taker_buys": {"vol": raw["perp_vol"]["total"]} if not raw["perp_vol"].empty else {},
+        "fear_greed": {"fng": raw["fng"]} if not raw["fng"].empty else {},
         "funding": {"funding": raw["funding"]} if not raw["funding"].empty else {},
         "altseason": {"alt": raw["altseason"]} if not raw["altseason"].empty else {},
         "memecoins": raw["alt_volumes"],
@@ -146,27 +153,156 @@ def component_status(df: pd.DataFrame, raw: dict, cfg) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def source_health(con) -> pd.DataFrame:
-    """Latest status of each data source: when it last worked, last error."""
-    log = storage.fetch_log(con, limit=5000)
-    if log.empty:
-        return log
-    log["ts"] = pd.to_datetime(log["ts"], utc=True, format="ISO8601")
-    rows = []
-    for source, g in log.groupby("source"):
-        g = g.sort_values("ts")
-        last = g.iloc[-1]
-        ok = g[g["ok"] == 1]
-        rows.append({
-            "Source": source,
-            "Status": "OK" if last["ok"] else "Failing",
-            "Last attempt": last["ts"].strftime("%Y-%m-%d %H:%M UTC"),
-            "Last success": ok["ts"].iloc[-1].strftime("%Y-%m-%d %H:%M UTC") if not ok.empty else "never",
-            "Rows (last)": int(last["rows"] or 0),
-            "Last error": "" if last["ok"] else last["message"],
-        })
-    out = pd.DataFrame(rows)
-    return out.sort_values(["Status", "Source"], ascending=[True, True]).reset_index(drop=True)
+# Sources that were removed from the dashboard: their old log rows are not shown.
+RETIRED_SOURCES = {"src:tokenized_stocks", "rec:trade_leaderboard:lighter", "rec:trade_leaderboard:gmx",
+                   "rec:lighter_sample"}
+STALE_AFTER = pd.Timedelta(hours=48)     # default: no successful fetch for this long = stale
+
+_H, _D = pd.Timedelta(hours=1), pd.Timedelta(days=1)
+# How often each source is expected to succeed (prefix, first match wins), from
+# the recorder's schedule (src/recorder.py) and each input's own due window.
+# A source is Stale when its last success is older than stale_after(cadence).
+CADENCE = [
+    ("rec:option_chain:ibit", 3 * _D),            # weekdays after the US close: Friday -> Monday
+    ("rec:lightning", _D), ("rec:liq_calibrate", _D), ("rec:", _H),
+    ("google_trends:weekly", 6 * _D), ("google_trends:monthly", 25 * _D), ("bgeo:", 7 * _D),
+    ("hacker_news", _H), ("src:social", _H), ("src:coinbase_hourly", _H), ("src:coinmetrics", 6 * _H),
+    ("src:cftc", _D), ("src:", 12 * _H),
+    ("perp:", _H), ("book:", _H), ("options:", _H), ("funding_hist:", _H), ("oi_hist:", _H),
+    ("hyperliquid_cohorts", _H), ("coinalyze:1hour", _H),
+]
+# Sources whose successful runs legitimately store nothing (no new
+# transactions, no inputs due this hour); all others are Stale after
+# ZERO_ROWS_RUNS successes in a row with 0 rows.
+ZERO_ROWS_OK = ("onchain", "src:social", "trade_review", "rec:liq_feeds")
+ZERO_ROWS_RUNS = 3
+MARKER_SUFFIXES = (":partial", ":failed")   # ok=0 notes beside a source that did run (e.g. blockchain_com:partial)
+
+
+def _span(t: pd.Timedelta) -> str:
+    h = t.total_seconds() / 3600
+    return f"{h / 24:.0f} d" if h >= 48 else f"{h:.0f} h"
+
+
+def cadence(source: str) -> pd.Timedelta:
+    return next((c for p, c in CADENCE if source.startswith(p)), _D)
+
+
+def stale_after(source: str) -> pd.Timedelta:
+    """Allowed age of the last success: two missed runs, and at least two
+    hours of slack for hourly jobs (successes are logged at most hourly)."""
+    c = cadence(source)
+    return max(2 * c, c + 2 * _H)
+
+SOURCE_GROUPS = [   # (prefix, group shown on Data health), first match wins
+    ("rec:", "Recorder (live)"), ("onchain", "Watched wallets"), ("wikipedia:", "Social: Wikipedia"),
+    ("wikitotal:", "Social: Wikipedia"), ("youtube:", "Social: YouTube"), ("app_store:", "Social: App Store"),
+    ("google_trends", "Social: Google Trends"), ("gdelt", "Social: news and forums"),
+    ("hacker_news", "Social: news and forums"), ("src:social", "Social: news and forums"),
+    ("bgeo:", "BGeometrics (on-chain)"), ("fred", "FRED (macro)"), ("src:fred", "FRED (macro)"),
+    ("central_bank_calendar", "FRED (macro)"), ("coinalyze", "Coinalyze (derivatives)"),
+    ("src:coinalyze", "Coinalyze (derivatives)"), ("perp:", "Exchanges: perps snapshot"),
+    ("book:", "Exchanges: order books"), ("options:", "Exchanges: options"),
+    ("funding_hist:", "Exchanges: funding and OI history"), ("oi_hist:", "Exchanges: funding and OI history"),
+    ("price:", "Prices"), ("event_price:", "Prices"),
+    ("trade_review", "Trade review"), ("hyperliquid_cohorts", "Hyperliquid cohorts"),
+    ("src:", "Market data sources"),
+]
+
+
+def source_group(source: str) -> str:
+    return next((g for p, g in SOURCE_GROUPS if source.startswith(p)), source.split(":")[0])
+
+
+def ago(delta) -> str:
+    """'just now', '42 min ago', '5 h ago', '3 d ago' (for a pd.Timedelta)."""
+    if delta is None or pd.isna(delta):
+        return "never"
+    m = delta.total_seconds() / 60
+    if m < 2:
+        return "just now"
+    if m < 90:
+        return f"{m:.0f} min ago"
+    if m < 48 * 60:
+        return f"{m / 60:.0f} h ago"
+    return f"{m / 1440:.0f} d ago"
+
+
+def source_health(con, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """One row per data source over the whole fetch log: status, when it last
+    worked and the last error. Status:
+      Failing = the last attempt failed;
+      Stale   = the last success is older than the source's expected cadence
+                (stale_after), or its last ZERO_ROWS_RUNS successes stored 0 rows;
+      OK otherwise.
+    ':partial' / ':failed' notes are shown only while recent."""
+    q = """
+        SELECT f.source, f.ts AS last_attempt, f.ok AS last_ok, f.rows AS last_rows, f.message AS last_message,
+               s.last_success
+        FROM fetch_log f
+        JOIN (SELECT source, MAX(ts) AS mts, MAX(CASE WHEN ok = 1 THEN ts END) AS last_success
+              FROM fetch_log GROUP BY source) s ON s.source = f.source AND s.mts = f.ts
+        GROUP BY f.source"""
+    df = pd.read_sql_query(q, con)
+    df = df[~df["source"].isin(RETIRED_SOURCES)]
+    if df.empty:
+        return pd.DataFrame()
+    zero = pd.read_sql_query(
+        "SELECT source, MAX(rows) AS mx, COUNT(*) AS n FROM (SELECT source, rows, ROW_NUMBER() OVER "
+        "(PARTITION BY source ORDER BY ts DESC) AS k FROM fetch_log WHERE ok = 1) WHERE k <= ? GROUP BY source",
+        con, params=(ZERO_ROWS_RUNS,))
+    empty_runs = set(zero.loc[(zero["n"] >= ZERO_ROWS_RUNS) & (zero["mx"].fillna(0) == 0), "source"])
+    now = now or pd.Timestamp.now(tz="UTC")
+    for c in ("last_attempt", "last_success"):
+        df[c] = pd.to_datetime(df[c], utc=True, format="ISO8601")
+    limit = df["source"].map(stale_after)
+    marker = df["source"].str.endswith(MARKER_SUFFIXES)
+    df = df[~marker | ((now - df["last_attempt"]) <= limit)]
+    limit = limit[df.index]
+    failing = df["last_ok"] != 1
+    too_old = df["last_success"].isna() | ((now - df["last_success"]) > limit)
+    no_rows = df["source"].isin(empty_runs) & ~df["source"].str.startswith(ZERO_ROWS_OK)
+    stale = too_old | no_rows
+    note = np.where(no_rows, f"last {ZERO_ROWS_RUNS} runs stored 0 rows",
+                    "no success for over " + limit.map(_span))
+    out = pd.DataFrame({
+        "Status": np.where(failing, "Failing", np.where(stale, "Stale", "OK")),
+        "Group": df["source"].map(source_group),
+        "Source": df["source"],
+        "Last success": df["last_success"],
+        "Updated": (now - df["last_success"]).map(ago),
+        "Last attempt": df["last_attempt"],
+        "Rows (last)": df["last_rows"].fillna(0).astype(int),
+        "Expected": df["source"].map(lambda x: "every " + _span(cadence(x))),
+        "Last error": np.where(failing, df["last_message"].fillna(""), np.where(stale, note, "")),
+    })
+    order = {"Failing": 0, "Stale": 1, "OK": 2}
+    return out.sort_values(["Status", "Group", "Source"], key=lambda c: c.map(order) if c.name == "Status" else c) \
+              .reset_index(drop=True)
+
+
+# Series behind the headline panels: when any is stale the dashboard warns at the top.
+KEY_SOURCES = ("price:", "perp:", "src:coinmetrics", "src:yahoo", "funding_hist:")
+
+
+def staleness_banner(h: pd.DataFrame, assets: list[str]) -> str | None:
+    """Warning text for the top of the dashboard, or None when key data is
+    current: names the stale/failing key sources for the first asset, and
+    the overall share of sources that are not OK."""
+    if h is None or h.empty:
+        return None
+    a0 = assets[0] if assets else "BTC"
+    key = h[h["Source"].map(lambda x: x.startswith(KEY_SOURCES) and (":" not in x.removeprefix("src:")
+                                                                         or x.endswith(f":{a0}")))]
+    bad_key = key[key["Status"] != "OK"]
+    bad_key = bad_key.iloc[bad_key["Source"].map(lambda x: next(i for i, p in enumerate(KEY_SOURCES)
+                                                                if x.startswith(p))).argsort(kind="stable")]
+    share = float((h["Status"] != "OK").mean())
+    if bad_key.empty and share < 0.25:
+        return None
+    parts = [f"{r.Source} (updated {r.Updated})" for r in bad_key.itertuples()][:4]
+    return ((f"Some key data is old or failing: {', '.join(parts)}. " if parts else "")
+            + f"{share:.0%} of sources are stale or failing (see Data health).")
 
 
 # --------------------------------------------------------------------------- #

@@ -20,7 +20,10 @@ def _perps(asset: str = "BTC") -> list[dict]:
 
 
 def _per_symbol(c: Ctx, field: str, asset: str = "BTC") -> pd.DataFrame:
-    return pd.DataFrame({m["symbol"]: c.s(f"czd:{m['symbol']}:{field}") for m in _perps(asset)}).sort_index()
+    from ..collectors.coinalyze import one_sided_oi
+    get = lambda sym: c.s(f"czd:{sym}:{field}")  # noqa: E731
+    return pd.DataFrame({m["symbol"]: one_sided_oi(m["symbol"], get(m["symbol"])) if field == "oi_usd"
+                         else get(m["symbol"]) for m in _perps(asset)}).sort_index()
 
 
 def _by(c: Ctx, field: str, key: str, asset: str = "BTC") -> pd.DataFrame:

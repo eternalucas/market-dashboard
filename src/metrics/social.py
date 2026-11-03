@@ -83,9 +83,19 @@ def component(key: str):
     return f
 
 
-def coverage(c: Ctx) -> pd.Series:
-    """How many of the 12 components fed each day's score."""
-    return _col(c, "n_components").rename("Components")
+def coverage(c: Ctx) -> pd.DataFrame:
+    """How many components fed each day's score, per group (attention,
+    speculation) and in total. The score needs at least one live input in
+    each group."""
+    df, _ = frame(c)
+    if df.empty:
+        return pd.DataFrame()
+    out = {}
+    for group in ("attention", "speculation"):
+        cols = [k for k, (_, g, _) in sr.COMPONENTS.items() if g == group and k in df]
+        out[f"{group.title()} ({len(cols)} inputs)"] = df[cols].notna().sum(axis=1)
+    out["Total"] = df["n_components"] if "n_components" in df else sum(out.values())
+    return pd.DataFrame(out)
 
 
 # Raw inputs -------------------------------------------------------------------
@@ -150,15 +160,30 @@ def coinbase_rank(c: Ctx) -> pd.DataFrame:
 
 
 def youtube_views(c: Ctx) -> pd.Series:
-    """New views per day across the tracked crypto YouTube channels (7-day average)."""
+    """New views per day, summed over the tracked crypto YouTube channels.
+
+    YouTube only publishes each channel's lifetime views, recorded once a day
+    while the dashboard runs. A day's new views = the change in lifetime views;
+    when readings are days apart, each day in between gets that interval's
+    average. The total only counts days on which every channel has a value, so
+    a channel whose recording started later can't make the total jump."""
     _, raw = frame(c)
     per = []
     for v in raw["yt_views"].values():
         d = sr.to_daily(v, 0).interpolate(limit_area="inside").diff()
-        per.append(d.where(d >= 0))
+        per.append(d.where(d >= 0))                 # deleted videos can make lifetime views dip
     if not per:
         return pd.Series(dtype=float)
-    return pd.concat(per, axis=1, sort=True).sum(axis=1, min_count=1).rolling(7, min_periods=5).mean().dropna()
+    df = pd.concat(per, axis=1, sort=True)
+    return df.sum(axis=1, min_count=df.shape[1]).dropna()
+
+
+def perp_leverage(c: Ctx) -> pd.Series:
+    """Perpetual open interest (USD, all covered exchanges) / BTC market cap [%]."""
+    from . import futures as fu
+    oi, mcap = fu.open_interest(c), c.mcap()
+    oi.index, mcap.index = oi.index.normalize(), mcap.index.normalize()
+    return (oi / mcap * 100).dropna()
 
 
 def hacker_news(c: Ctx) -> pd.DataFrame:

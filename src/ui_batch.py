@@ -45,8 +45,7 @@ def render(rcon, el) -> None:
     st.caption("The backtest from each trader's page, run on every trader on the 30-day board, then summarised: "
                "which mistakes are most common among top traders, which rules would have helped most often "
                "(simulated, out of sample), and whether last month's top traders stayed on top.")
-    venue = st.segmented_control("Venue", list(venues.VENUES), default="hyperliquid", key="batch-venue",
-                                 format_func=lambda v: venues.LABELS.get(v, v)) or "hyperliquid"
+    venue = "hyperliquid"
     LABEL = venues.LABELS.get(venue, venue)
     bid, run = _latest(rcon, venue)
     c1, c2 = st.columns([1, 3], vertical_alignment="center")
@@ -63,6 +62,8 @@ def render(rcon, el) -> None:
                    "at most once a day; each trader's own result is reused while their data is unchanged).")
     elif run and run["status"] == "error":
         c2.error(f"The last run stopped: {run['message']}")
+    elif run and run["status"] == "interrupted":
+        c2.warning(f"The last run was interrupted at {run['progress']:.0%} ({run['message']}).")
     done = run if run and run["status"] == "done" else None
     if not done:
         prev = rcon.execute("SELECT run_id FROM tr_backtest_runs WHERE account_id='*' AND status='done' AND venue=? "
@@ -176,10 +177,11 @@ def _results(r: dict) -> None:
             cc.fig = None
     with st.expander(f"Every trader ({r['traders']})"):
         df = pd.DataFrame(r["per_trader"])
-        df["Trader"] = "?trader=" + df["account_id"].astype(str) + "&venue=" + r.get("venue", "hyperliquid")
+        from .ui_review import TRADER_LINK_TEXT, trader_link
+        df["Trader"] = [trader_link(a, r.get("venue", "hyperliquid")) for a in df["account_id"].astype(str)]
         st.dataframe(df[["Trader", "status", "trips", "actual_test", "golden_error", "best_rule", "best_gain",
                          "best_label", "mistakes"]], hide_index=True, width="stretch", column_config={
-            "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=([0-9a-zx]+)"),
+            "Trader": st.column_config.LinkColumn("Trader", display_text=TRADER_LINK_TEXT),
             "status": "Status", "trips": "Round trips",
             "actual_test": st.column_config.NumberColumn("Actual P&L, test window", format="$%,.0f"),
             "golden_error": st.column_config.NumberColumn("Replay error", format="percent"),

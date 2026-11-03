@@ -1,15 +1,12 @@
 """Social Risk adapters (src/sources/social.py) with the network mocked.
 Response shapes match live responses checked 2026-10-21 (Wikimedia
 aggregate, Hacker News Algolia, Apple RSS); GDELT's follows its DOC 2.0 docs."""
-import os
-import tempfile
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-os.environ.setdefault("MARKET_DB", str(Path(tempfile.mkdtemp()) / "t.db"))
 
 from src import storage, views  # noqa: E402
 from src.sources import social  # noqa: E402

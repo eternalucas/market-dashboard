@@ -2,15 +2,12 @@
 order-book maths, and idempotent writes."""
 import json
 import math
-import os
-import tempfile
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 FIX = Path(__file__).parent / "fixtures"
-os.environ.setdefault("MARKET_DB", str(Path(tempfile.mkdtemp()) / "t.db"))
 
 from src import recorder, storage  # noqa: E402
 from src.collectors import deribit, futures_curve, mempool_space  # noqa: E402

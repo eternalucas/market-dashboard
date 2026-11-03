@@ -10,6 +10,7 @@ rate-limits Trends, you see exactly which feed failed and why.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 from typing import Callable
@@ -389,7 +390,15 @@ def _fetch_wallet(w) -> dict:
 BTC_SYNC_STATE = "btc_sync.json"
 
 
+_BTC_SYNC_LOCK = threading.Lock()   # the recorder's watched_wallets and pipeline jobs both sync
+
+
 def sync_btc_wallets(con, max_pages: int = 8) -> dict:
+    with _BTC_SYNC_LOCK:                # one sync at a time: both rewrite btc_sync.json
+        return _sync_btc_wallets(con, max_pages)
+
+
+def _sync_btc_wallets(con, max_pages: int = 8) -> dict:
     """Hourly (recorder) and on 'Update all data': every watched Bitcoin
     wallet's balance, plus all its new confirmed transactions since the last
     sync (paged until the last stored one). Per wallet, `complete_since` is
@@ -521,6 +530,54 @@ def update_hl_cohorts(con, cfg):
 # --------------------------------------------------------------------------- #
 
 
+def steps(cfg: dict) -> list[tuple[str, str, Callable, str, pd.Timedelta]]:
+    """The sequential parts of an update: (key, label, function, fetch-log
+    source that marks it done, how long it stays fresh). Run by run_all and,
+    every hour, by the recorder's `pipeline` job (src/recorder.py)."""
+    return [
+        ("prices", "Prices", update_prices, f"price:{cfg['assets'][0]}", DAILY),
+        # Social Risk inputs (Wikipedia, Trends, App Store, YouTube, Hacker News,
+        # GDELT) update through the source registry (sources/social.py).
+        ("positioning_history", "Funding and OI history", update_positioning_history,
+         f"funding_hist:{cfg['positioning']['perp_exchanges'][0]}:{cfg['assets'][0]}", HOURLY),
+        ("events", "Macro event calendar and prices", update_events, "central_bank_calendar", DAILY),
+        ("trade_review", "Trade review (Hyperliquid)", update_trade_review, "trade_review:hyperliquid", DAILY),
+        ("onchain", "Watched wallets (on-chain)", update_onchain, "onchain", DAILY),
+        ("hl_cohorts", "Hyperliquid cohorts", update_hl_cohorts, "hyperliquid_cohorts", HOURLY),
+    ]
+
+
+def run_steps(con, cfg: dict, full: bool = False, say=print) -> list[str]:
+    """Run every step of steps(cfg) that is due (all of them when `full`).
+    Returns the labels skipped as fresh. A step that raises is logged and
+    never stops the next one."""
+    skipped = []
+    for key, label, fn, source, max_age in steps(cfg):
+        if not full and source and is_fresh(con, source, max_age):
+            skipped.append(label)
+            continue
+        say(f"Updating {label}...")
+        try:
+            fn(con, cfg)
+        except Exception as e:  # noqa: BLE001 - one step failing never stops the others
+            storage.log_fetch(con, f"step:{key}", False, 0, f"{type(e).__name__}: {e}")
+    return skipped
+
+
+def positioning_all(con, cfg: dict, say=print) -> None:
+    """Live perps / book / options snapshot for every asset (funding_8h:,
+    oi_usd:, basis:, depth and skew series)."""
+    for asset in cfg["assets"]:
+        say(f"Updating live positioning for {asset}...")
+        positioning_snapshot(con, cfg, asset)
+
+
+# Every part of run_all besides steps(): (key, what it does). The recorder
+# maps each one, and each step key, to a scheduled job (recorder.PIPELINE_JOBS).
+RUN_ALL_EXTRAS = {"flows": "update_flows (Coinalyze 1h bars)", "sources": "sources.registry.update_all",
+                  "positioning_snapshot": "positioning_all (live snapshot, every asset)"}
+
+
 def run_all(cfg: dict | None = None, include_trends: bool = True,
             progress: Callable[[str], None] | None = None, full: bool = False) -> None:
     """Update every source. Parts that already ran recently are skipped
@@ -528,21 +585,8 @@ def run_all(cfg: dict | None = None, include_trends: bool = True,
     cfg = cfg or load_config()
     con = storage.connect()
     say = progress or print
-    # (label, function, fetch-log source that marks it done, how long it stays fresh)
-    steps = [
-        ("Prices", update_prices, f"price:{cfg['assets'][0]}", DAILY),
-        # Social Risk inputs (Wikipedia, Trends, App Store, YouTube, Hacker News,
-        # GDELT) now update through the source registry below (sources/social.py).
-        ("Funding and OI history", update_positioning_history,
-         f"funding_hist:{cfg['positioning']['perp_exchanges'][0]}:{cfg['assets'][0]}", HOURLY),
-        ("Macro event calendar and prices", update_events, "central_bank_calendar", DAILY),
-        ("Trade review (Hyperliquid)", update_trade_review, "trade_review:hyperliquid", DAILY),
-        ("Watched wallets (on-chain)", update_onchain, "onchain", DAILY),
-        ("Hyperliquid cohorts", update_hl_cohorts, "hyperliquid_cohorts", HOURLY),
-    ]
     # Coinalyze is slow only because of its 40-calls-a-minute limit, so it runs
     # in the background (own database connection) while everything else updates.
-    import threading
     def _flows():
         c = storage.connect()
         try:
@@ -552,13 +596,7 @@ def run_all(cfg: dict | None = None, include_trends: bool = True,
     say("Updating cross-exchange flows (Coinalyze) in the background...")
     flows_thread = threading.Thread(target=_flows, daemon=True)
     flows_thread.start()
-    skipped = []
-    for label, fn, source, max_age in steps:
-        if not full and source and is_fresh(con, source, max_age):
-            skipped.append(label)
-            continue
-        say(f"Updating {label}...")
-        fn(con, cfg)
+    skipped = run_steps(con, cfg, full=full, say=say)
     if skipped:
         say("Already up to date, skipped: " + ", ".join(skipped))
     if flows_thread.is_alive():
@@ -567,9 +605,7 @@ def run_all(cfg: dict | None = None, include_trends: bool = True,
     from .sources import registry
     say("Updating Glassnode-style data sources...")
     registry.update_all(con, {**cfg, "_include_trends": include_trends}, force=full, say=say)
-    for asset in cfg["assets"]:
-        say(f"Updating live positioning for {asset}...")
-        positioning_snapshot(con, cfg, asset)
+    positioning_all(con, cfg, say=say)
     say("Done.")
     con.close()
 

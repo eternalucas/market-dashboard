@@ -48,6 +48,39 @@ def _new_trip(coin: str, row, qty: float, fee: float, ts) -> dict:
             "first_px": row.px}
 
 
+def _near(a: float, b: float, sz: float) -> bool:
+    return abs(a - b) <= _tol(max(abs(a), abs(b), sz))
+
+
+def order_fills(fills: pd.DataFrame) -> pd.DataFrame:
+    """Fills in execution order. Time first; fills of one coin in the same
+    millisecond are put in the order their positions chain (each fill's
+    start_position + signed size = the next one's start_position), because
+    Hyperliquid's trade ids are not sequential within a millisecond. The
+    trade id only breaks ties the chain can't decide."""
+    f = fills.assign(_o=pd.to_numeric(fills["fill_id"], errors="coerce") if "fill_id" in fills else 0)
+    f = f.sort_values(["ts", "_o"], kind="stable").drop(columns="_o").reset_index(drop=True)
+    if not f.duplicated(["coin", "ts"]).any():
+        return f
+    start = f["start_position"].to_numpy(float)
+    end = start + np.where(f["side"].to_numpy() == "B", 1.0, -1.0) * f["sz"].to_numpy(float)
+    sz = f["sz"].to_numpy(float)
+    order: list[int] = []
+    for _, g in f.groupby("coin", sort=False):
+        prev = None
+        for _, grp in g.groupby("ts", sort=False):       # times ascending, trade-id order inside
+            rest = list(grp.index)
+            while rest:
+                k = next((i for i in rest if prev is not None and _near(start[i], prev, sz[i])), None)
+                if k is None:                            # chain head: no other fill ends where it starts
+                    k = next((i for i in rest if not any(_near(start[i], end[j], sz[i]) for j in rest if j != i)),
+                             rest[0])
+                rest.remove(k)
+                order.append(k)
+                prev = end[k]
+    return f.loc[order].sort_values("ts", kind="stable").reset_index(drop=True)
+
+
 def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None, legs: bool = False
                 ) -> tuple[pd.DataFrame, dict]:
     """fills: coin, ts, side (B/A), px, sz, start_position, closed_pnl, fee, is_taker, fill_id, [liq_role].
@@ -65,8 +98,7 @@ def reconstruct(fills: pd.DataFrame, funding: pd.DataFrame | None = None, legs: 
         f["liq_role"] = None
     perp = f["coin"].map(is_perp)
     report["spot_fills_skipped"] = int((~perp).sum())
-    f = f[perp].assign(_order=pd.to_numeric(f["fill_id"], errors="coerce"))
-    f = f.sort_values(["ts", "_order"], kind="stable").drop(columns="_order")
+    f = order_fills(f[perp])
     if f.empty:
         return pd.DataFrame(columns=TRIP_COLS), report
     report["first_fill"], report["last_fill"] = f["ts"].min(), f["ts"].max()

@@ -18,6 +18,7 @@ from src.indicators import positioning as pos
 
 st.set_page_config(page_title="Market Dashboard", layout="wide")
 # Every chart: billions as "B", never Plotly's SI "G" (see src/numfmt.py)
+from src import chart_reset  # noqa: E402
 from src.numfmt import fix_si as _fix_si  # noqa: E402
 
 if not getattr(st.plotly_chart, "_fix_si", False):
@@ -25,8 +26,10 @@ if not getattr(st.plotly_chart, "_fix_si", False):
 
     def _plotly_chart_b(fig, *a, **k):
         return _plotly_chart(_fix_si(fig), *a, **k)
+    _plotly_chart_b = chart_reset.wrap(_plotly_chart_b)    # "Reset view" under every chart
     _plotly_chart_b._fix_si = True
     st.plotly_chart = _plotly_chart_b
+chart_reset.start_run()
 from src.running_icons import CSS as _RUNNING_CSS  # noqa: E402
 st.markdown(_RUNNING_CSS, unsafe_allow_html=True)
 
@@ -105,7 +108,6 @@ def _start_recorder() -> str:
 _rec_state = _start_recorder()
 
 with st.sidebar:
-    st.title("Market Dashboard")
     include_trends = st.checkbox("Include Google Trends", value=True,
                                  help="Google rate-limits Trends. Untick it if updates are slow or failing.")
     full = st.checkbox("Full refresh", value=False,
@@ -120,25 +122,28 @@ with st.sidebar:
     log = storage.fetch_log(con, limit=1)
     if not log.empty:
         st.caption(f"Last fetch: {pd.to_datetime(log['ts'].iloc[0]).strftime('%Y-%m-%d %H:%M UTC')}")
-    st.caption("While the dashboard (or Start Recorder) is open, the recorder refreshes every source on its own, "
-               "including the daily App Store and YouTube readings the Social Risk history builds from.")
+    st.caption("While the dashboard (or Start Recorder) is open, the recorder runs every part of this update on "
+               "its own schedule: live data every 1-15 minutes, prices, history, sources and positioning for every "
+               "asset hourly or daily as each one is due. Data health shows anything that falls behind. Use the "
+               "button for an immediate refresh.")
 
-last_full = max((t for t in (storage.last_success(con, "src:social"), storage.last_success(con, "src:coinmetrics"))
-                 if t is not None), default=None)
-if last_full is None:
+if log.empty:
     st.info("No data yet: click **Update all data** in the left sidebar. The first run takes several minutes.")
-elif pd.Timestamp.now(tz="UTC") - last_full > pd.Timedelta(hours=20):
-    days_old = (pd.Timestamp.now(tz="UTC") - last_full).days
-    st.warning(f"Data was last updated {last_full:%a %d %b %H:%M} UTC"
-               f"{f' ({days_old} days ago)' if days_old >= 1 else ''}. Click **Update all data** in the sidebar "
-               "for today's numbers; daily updates also build the history some panels need.")
+else:
+    _old = views.staleness_banner(views.source_health(con), cfg["assets"])
+    if _old:
+        st.warning(_old + " The recorder catches up while the dashboard is open; **Update all data** in the "
+                   "sidebar refreshes everything now.")
 
 # Social Risk now lives in Studio (Indicators > Social Risk).
-from src import ui_studio  # noqa: E402
+from src import ui_header, ui_studio  # noqa: E402
+ui_header.render(con, _rec_state)
 ui_studio.global_search()   # sits at the right end of the tab bar
+# The open tab (and Studio's dashboard, Trade review's view) live in the URL, so a
+# reload or a shared link opens the same page instead of the first tab.
 tab_studio, tab_pos, tab_flow, tab_chain, tab_events, tab_review, tab_health = st.tabs(
     ["Studio", "Positioning", "Flows", "On-chain", "Macro events", "Trade review", "Data health"],
-    key="main-tabs", on_change="rerun")
+    key="tab", bind="query-params")
 
 with tab_studio:
     try:
@@ -600,23 +605,7 @@ with tab_review:
 
 with tab_health:
     try:
-        st.subheader("Data health")
-        st.caption("Every fetch is logged. A failing source never stops the others; it shows up here with the error.")
-        health = views.source_health(con)
-        if health.empty:
-            st.caption("Nothing fetched yet.")
-        else:
-            ok = (health["Status"] == "OK").sum()
-            st.metric("Sources working", f"{ok} of {len(health)}")
-            st.dataframe(health, hide_index=True, width="stretch")
-        st.subheader("Recorders")
-        st.caption({"started": "Recording in the background while the dashboard is open.",
-                    "already running": "Recording in the background while the dashboard is open.",
-                    "running elsewhere": "Start Recorder.command is recording in its own window."}.get(_rec_state, _rec_state)
-                   + " Order books every minute, option trades every 5 minutes, futures curve every 15, "
-                     "option chain hourly, IBIT options after each US close.")
-        rs = recorder.status(con)
-        if not rs.empty:
-            st.dataframe(rs, hide_index=True, width="stretch")
+        from src import ui_health
+        ui_health.render(con, _rec_state)
     except Exception as e:  # noqa: BLE001 - one broken tab must not blank the others
         tab_error("tab_health", e)

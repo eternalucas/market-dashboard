@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,11 +111,19 @@ CREATE TABLE IF NOT EXISTS fetch_log (
 """
 
 
+BUSY_TIMEOUT_S = 30
+LOG_RETRIES = 3            # extra attempts for a fetch-log write that hit 'database is locked'
+
+
 def connect(db_path: Path | str = DB_PATH) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     # timeout + WAL: the update writes from two threads at once (Coinalyze runs
     # alongside the other sources) while the dashboard keeps reading.
-    con = sqlite3.connect(db_path, timeout=30)
+    # BUSY_TIMEOUT_S is how long a write waits for another connection's lock
+    # (several recorder threads and the dashboard each hold one) before raising
+    # 'database is locked'; log_fetch retries on top of that.
+    con = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_S)
+    con.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_S * 1000)}")
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
     return con
@@ -168,11 +177,20 @@ def series_names(con: sqlite3.Connection, prefix: str) -> list[str]:
 
 
 def log_fetch(con: sqlite3.Connection, source: str, ok: bool, rows: int = 0, message: str = "") -> None:
-    con.execute(
-        "INSERT INTO fetch_log (ts, source, ok, rows, message) VALUES (?, ?, ?, ?, ?)",
-        (datetime.now(timezone.utc).isoformat(), source, int(ok), rows, message[:500]),
-    )
-    con.commit()
+    """Append one fetch-log row. A locked database is retried LOG_RETRIES
+    times with backoff (1, 2, 4 s on top of the busy timeout) before raising."""
+    row = (datetime.now(timezone.utc).isoformat(), source, int(ok), rows, message[:500])
+    for attempt in range(LOG_RETRIES + 1):
+        try:
+            con.execute("INSERT INTO fetch_log (ts, source, ok, rows, message) VALUES (?, ?, ?, ?, ?)", row)
+            con.commit()
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) and "busy" not in str(e):
+                raise
+            if attempt == LOG_RETRIES:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def fetch_log(con: sqlite3.Connection, limit: int = 500) -> pd.DataFrame:

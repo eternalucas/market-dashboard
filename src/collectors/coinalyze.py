@@ -100,6 +100,19 @@ class Client:
         return out
 
 
+# Coinalyze exchange code for Bybit (symbols end in ".6"). Bybit's open
+# interest counts both sides (longs + shorts); every other venue, and the
+# Positioning tab (collectors/derivatives.py), uses one side.
+BYBIT_CODE = "6"
+
+
+def one_sided_oi(symbol: str, oi: pd.Series | pd.DataFrame):
+    """Open interest on the one-sided convention used everywhere in the
+    dashboard: Bybit's stored Coinalyze OI is halved, others pass through.
+    Applied wherever stored Coinalyze OI is read, so old rows are covered too."""
+    return oi / 2 if symbol.rsplit(".", 1)[-1] == BYBIT_CODE else oi
+
+
 QUOTE_PREFERENCE = ["USDT", "USD", "USDC", "FDUSD"]
 
 

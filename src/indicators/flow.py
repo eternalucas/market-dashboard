@@ -7,10 +7,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# Exchanges that pay funding every hour instead of every 8 hours. Their rate
-# is multiplied by 8 so it sits on the same scale as everyone else.
-HOURLY_FUNDING = {"hyperliquid"}
-
+# Payment interval (hours) fixed by venue rule: OKX's Coinalyze funding is a
+# live predicted rate that moves every hour, so its interval can't be read
+# from when the rate changes; Hyperliquid always pays hourly. All other
+# venues' intervals are read from the data (payment_interval_hours).
+FIXED_INTERVAL_H = {"okx": 8.0, "hyperliquid": 1.0}
 
 def bar_delta(ohlcv: pd.DataFrame) -> pd.Series:
     """Net taker flow per bar: taker buys minus taker sells, in coins.
@@ -45,24 +46,34 @@ def oi_in_coins(oi_usd: dict[str, pd.DataFrame], closes: dict[str, pd.Series]) -
     return pd.concat(parts, axis=1).sum(axis=1, min_count=1)
 
 
-def as_percent(rate: pd.Series) -> pd.Series:
-    """Coinalyze funding comes in percent (0.01 = 0.01%). If a series looks
-    like a raw fraction instead (typical magnitude ~0.0001), convert it, so
-    the chart is right either way."""
-    typical = rate.abs().median()
-    return rate * 100 if pd.notna(typical) and 0 < typical < 0.001 else rate
+def payment_interval_hours(rate: pd.Series, exchange: str = "") -> float:
+    """Hours between funding payments. Coinalyze shows the rate of the last
+    payment, so the value only changes when a payment happens: the most
+    common gap between changes is the interval (1h Hyperliquid, 4h for
+    Binance/Bybit HYPE or ENA, 8h most others). Read from hourly bars."""
+    if exchange.lower() in FIXED_INTERVAL_H:
+        return FIXED_INTERVAL_H[exchange.lower()]
+    r = rate.dropna().sort_index()
+    changes = r.index[1:][r.values[1:] != r.values[:-1]]
+    gaps = pd.Series(changes).diff().dt.total_seconds().div(3600).round().dropna()
+    gaps = gaps[gaps > 0]
+    if gaps.empty:
+        return 8.0
+    return float(min(max(gaps.mode().min(), 1.0), 8.0))
 
 
-def oi_weighted_funding(funding: dict[str, pd.DataFrame], oi_usd: dict[str, pd.DataFrame]) -> pd.Series:
+def oi_weighted_funding(funding: dict[str, pd.DataFrame], oi_usd: dict[str, pd.DataFrame],
+                        interval_h: dict[str, float] | None = None) -> pd.Series:
     """Funding averaged across exchanges, weighted by each one's USD open
-    interest at that bar, in % per 8 hours."""
+    interest at that bar, in % per 8 hours. Coinalyze funding is in percent
+    per payment; each exchange is scaled by 8 / its payment interval
+    (`interval_h`, hours; 8 if not given)."""
+    interval_h = interval_h or {}
     rates, weights = [], []
     for ex, df in funding.items():
         if ex not in oi_usd:
             continue
-        r = as_percent(df["c"])
-        if ex.lower() in HOURLY_FUNDING:
-            r = r * 8
+        r = df["c"] * 8 / interval_h.get(ex, 8.0)
         rates.append(r.rename(ex))
         weights.append(oi_usd[ex]["c"].reindex(r.index).ffill().rename(ex))
     if not rates:

@@ -2,22 +2,22 @@
 
 A Python and Streamlit dashboard for the attention, positioning and on-chain
 data I used to check by hand across a dozen websites before making
-discretionary trades. It pulls free public data from about 28 providers,
+discretionary trades. It pulls free public data from 27 providers,
 cleans it, stores it in a local SQLite database, and shows it in seven views.
 
 It's a data tool, not a trading bot: it informs decisions, it doesn't make them.
 
 **At a glance**
 
-- 287 charts across 38 dashboards, each with an "About this chart" note on how the metric is built
+- 283 charts across 37 dashboards, each with an "About this chart" note on how the metric is built
 - 121 labelled wallets tracked (exchanges, market makers, Bitcoin wallets holding 10,000+ BTC)
-- 180+ tests, run without the network against real captured API responses
+- 236 tests, run without the network against real captured API responses
 - Outputs checked against Glassnode's free reference values where available; every discrepancy and fix is logged in [`BUILD_LOG.md`](BUILD_LOG.md)
 
 ## Views
 
-- **Studio**: 38 dashboards in the style of Glassnode Studio (spot, futures,
-  options, ETFs, macro, on-chain, stablecoins, tokenized equities and
+- **Studio**: 37 dashboards in the style of Glassnode Studio (spot, futures,
+  options, ETFs, macro, on-chain, stablecoins and
   indicators), built only from free sources and excluding anything that needs
   a Bitcoin node. A search box finds any chart or dashboard by name.
 - **Positioning**: funding, open interest, basis, order-book depth and
@@ -90,7 +90,7 @@ network, and a broken source never breaks the rest of the dashboard.
 Blockstream, Blockscout, DefiLlama, CoinGecko, alternative.me, Coinalyze,
 Coinbase, Binance, Bybit, OKX, Kraken, Hyperliquid, Deribit, CFTC, FRED,
 Yahoo Finance, Farside, Wikimedia, Google Trends, YouTube, the App Store,
-Hacker News and GDELT.
+Hacker News and GDELT (news coverage, shown as its own chart).
 
 ## Social Risk method
 
@@ -105,18 +105,18 @@ built from 12 inputs in two groups.
 | Attention | App Store ranks of crypto apps (US, Canada, UK) | 1.00 |
 | Attention | YouTube crypto channels: new views per day | 0.75 |
 | Attention | Hacker News mentions (weekly) | 0.50 |
-| Attention | News coverage, GDELT (share of all articles) | 0.50 |
-| Attention | X impressions (logged by hand; X's API is paid) | 0.50 |
 | Speculation | Fear & Greed Index | 0.50 |
 | Speculation | Perpetual funding rate | 1.00 |
 | Speculation | Altcoin Season Index | 0.75 |
 | Speculation | Memecoin share of altcoin volume | 0.75 |
+| Speculation | Perp leverage (open interest / market cap) | 0.75 |
+| Speculation | Perp taker buy share | 0.50 |
 
 Social Risk = 65% Attention + 35% Speculation.
 
 1. Each raw series is turned into a share where a denominator exists (an
-   article's views over all views of that Wikipedia, crypto articles over
-   all news), which removes platform growth or decline from the signal.
+   article's views over all views of that Wikipedia, memecoin volume over
+   altcoin volume), which removes platform growth or decline from the signal.
 2. Each series is scored by its rolling two-year percentile: 0.9 means
    higher than 90% of the past two years. Inputs with a fixed scale
    (Fear & Greed, Altcoin Season, app ranks) are rescaled directly.

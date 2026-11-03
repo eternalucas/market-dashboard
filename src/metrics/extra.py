@@ -108,7 +108,11 @@ def real_policy_rate(c: Ctx) -> pd.DataFrame:
         return pd.DataFrame()
     rate = m["us_rate"].dropna().resample("MS").last()
     cpi = m["us_core_cpi_yoy"].dropna().resample("MS").last()
-    df = pd.DataFrame({"Fed funds (nominal)": rate, "Core CPI YoY": cpi}).ffill(limit=2).dropna()
+    # The policy rate stays in force until changed, so it may carry forward; a CPI
+    # month that hasn't been published yet must not (that would repeat last month).
+    df = pd.DataFrame({"Fed funds (nominal)": rate, "Core CPI YoY": cpi})
+    df["Fed funds (nominal)"] = df["Fed funds (nominal)"].ffill(limit=2)
+    df = df.dropna()
     df["Real rate"] = df["Fed funds (nominal)"] - df["Core CPI YoY"]
     return df[["Real rate", "Fed funds (nominal)"]]
 

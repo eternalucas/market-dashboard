@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 
@@ -29,6 +30,65 @@ WINDOWS = {"all": None, "90d": 90, "30d": 30}
 RESULT_VERSION = 3                 # bump when the engine or the stored result changes (part of the cache key)
 _THREADS: dict[str, threading.Thread] = {}
 _LOCK = threading.Lock()
+HEARTBEAT_EVERY = 60               # seconds between heartbeats while a run's thread is alive
+HEARTBEAT_STALE = pd.Timedelta(minutes=10)
+INTERRUPTED_MSG = "Interrupted: the app stopped while this ran. Start it again to resume."
+_HB_SCHEMA = "CREATE TABLE IF NOT EXISTS tr_job_heartbeat (run_id TEXT PRIMARY KEY, ts TEXT, pid INTEGER)"
+
+
+def _alive_here(rid: str) -> bool:
+    """True when this process runs `rid` in a live thread (single runs and batches)."""
+    from . import batch
+    th = _THREADS.get(rid) or batch._THREAD.get(rid)
+    return bool(th and th.is_alive())
+
+
+def beat(con, rid: str) -> None:
+    """Record that `rid` is still being worked on by this process."""
+    con.execute(_HB_SCHEMA)
+    con.execute("INSERT OR REPLACE INTO tr_job_heartbeat VALUES (?, ?, ?)",
+                (rid, pd.Timestamp.now(tz="UTC").isoformat(), os.getpid()))
+    con.commit()
+
+
+def keep_beating(rid: str) -> threading.Event:
+    """Heartbeat `rid` every HEARTBEAT_EVERY s from a side thread (own
+    connection) until the returned event is set, so a long step with no
+    progress call still counts as alive."""
+    stop = threading.Event()
+
+    def loop():
+        c = store.connect()
+        try:
+            while True:
+                try:
+                    beat(c, rid)
+                except Exception:  # noqa: BLE001 - a missed beat (e.g. database locked) is retried next time
+                    pass
+                if stop.wait(HEARTBEAT_EVERY):
+                    break
+        finally:
+            c.close()
+    threading.Thread(target=loop, daemon=True, name=f"heartbeat-{rid[:10]}").start()
+    return stop
+
+
+def is_interrupted(con, rid: str, now: pd.Timestamp | None = None) -> bool:
+    """A 'running' row whose worker is gone. Never while this process runs
+    it in a live thread. Otherwise: no heartbeat at all (rows from before
+    heartbeats, or a process that exited), a heartbeat older than
+    HEARTBEAT_STALE, or a heartbeat from this process whose thread is no
+    longer alive (2 beats missed)."""
+    if _alive_here(rid):
+        return False
+    con.execute(_HB_SCHEMA)
+    r = con.execute("SELECT ts, pid FROM tr_job_heartbeat WHERE run_id=?", (rid,)).fetchone()
+    if not r:
+        return True
+    age = (now or pd.Timestamp.now(tz="UTC")) - pd.Timestamp(r[0])
+    if r[1] == os.getpid():
+        return age > pd.Timedelta(seconds=2 * HEARTBEAT_EVERY)
+    return age > HEARTBEAT_STALE
 
 
 def config_hash(a: cst.Assumptions) -> str:
@@ -45,6 +105,10 @@ def get(con, rid: str) -> dict | None:
                     "WHERE run_id=?", (rid,)).fetchone()
     if not r:
         return None
+    if r[0] == "running" and is_interrupted(con, rid):
+        _set(con, rid, status="interrupted", message=INTERRUPTED_MSG, finished=pd.Timestamp.now(tz="UTC").isoformat())
+        r = (*con.execute("SELECT status, progress, message, started, finished FROM tr_backtest_runs WHERE run_id=?",
+                          (rid,)).fetchone(), r[5])
     return {"status": r[0], "progress": r[1], "message": r[2], "started": r[3], "finished": r[4],
             "result": json.loads(r[5]) if r[5] else None}
 
@@ -65,6 +129,7 @@ def start(venue: str, acct: str, window: str, a: cst.Assumptions, fetch: bool = 
             alive = rid in _THREADS and _THREADS[rid].is_alive()
             if cur and (cur["status"] == "done" or alive):
                 return rid
+            beat(con, rid)                       # first, so the new row is never seen without one
             con.execute("INSERT OR REPLACE INTO tr_backtest_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (rid, venue, acct, window, config_hash(a), store.data_version(con, venue, acct), "running",
                          0.0, "Starting", pd.Timestamp.now(tz="UTC").isoformat(), None, None))
@@ -81,6 +146,7 @@ def start(venue: str, acct: str, window: str, a: cst.Assumptions, fetch: bool = 
 def _run(rid, venue, acct, window, a, fetch):
     con = store.connect()
     last = [0.0]
+    hb = keep_beating(rid)
 
     def progress(p, msg):
         if time.time() - last[0] > 1 or p >= 1:
@@ -101,6 +167,7 @@ def _run(rid, venue, acct, window, a, fetch):
         _set(con, rid, status="error", message=f"{type(e).__name__}: {e}"[:500],
              finished=pd.Timestamp.now(tz="UTC").isoformat())
     finally:
+        hb.set()
         con.close()
 
 

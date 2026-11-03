@@ -52,7 +52,7 @@ def render(con, cfg) -> None:
     qp_trader = st.query_params.get("trader")
     default = "Trader review" if qp_trader else "Top 100"
     mode = st.segmented_control("View", ["Top 100", "Trader review", "Across the Top 100"], default=default,
-                                key="tr-mode", label_visibility="collapsed") or default
+                                key="review", label_visibility="collapsed", bind="query-params") or default
     if mode == "Top 100":
         render_board(rcon, cfg)
     elif mode == "Across the Top 100":
@@ -74,8 +74,6 @@ def _start_refresh(venue: str = "hyperliquid", budget_s: int = 600) -> bool:
     def run():
         c = store.connect()
         try:
-            if venue == "lighter":
-                lbm.sample_accounts(c, "lighter", 25)
             lbm.refresh(c, venue, budget_s=budget_s, say=lambda *_: None)
         finally:
             c.close()
@@ -88,26 +86,15 @@ def _start_refresh(venue: str = "hyperliquid", budget_s: int = 600) -> bool:
 POOL_HELP = {
     "hyperliquid": "Top 1,000 by PnL in each of Hyperliquid's week, month and all-time lists (union). Refreshed every "
                    "6 hours.",
-    "lighter": "Lighter has no public P&L leaderboard: accounts seen in the latest trades of its most traded markets "
-               "(sampled every 15 minutes since 27 Oct 2026), the 600 with the most volume seen, ranked by their own "
-               "P&L history. Accounts that trade often are more likely to be found.",
-    "gmx": "Top 1,000 by P&L in GMX's own 7-day, 30-day and all-time account stats (Arbitrum). Refreshed every 12 hours.",
 }
 
 
 def render_board(rcon, cfg) -> None:
-    st.subheader("Top 100 on-chain perp traders")
-    venue = st.segmented_control("Venue", list(venues.VENUES), default="hyperliquid", key="tl-venue",
-                                 format_func=lambda v: venues.LABELS.get(v, v), label_visibility="collapsed") \
-        or "hyperliquid"
-    caps = venues.get(venue).caps
+    st.subheader("Top 100 Hyperliquid perp traders")
+    venue = "hyperliquid"
     st.caption("Ranked from each trader's own fills, funding and account history, recomputed here. The venue's "
                "leaderboard only decides whom to look at. Market makers, vaults and protocol accounts are excluded "
                "by behaviour; every filter is adjustable below.")
-    if caps.notes:
-        st.caption(" ".join(f"{v}" for k, v in caps.notes.items() if k in ("leaderboard", "funding_history",
-                                                                           "account_state", "orderbook_history")
-                            and venue != "hyperliquid"))
     stt = lbm.status(rcon, venue)
     kinds = stt["accounts_by_kind"]
     c = st.columns([1.2, 1, 1, 1, 1.3], vertical_alignment="center")
@@ -152,6 +139,9 @@ def render_board(rcon, cfg) -> None:
                                                     help="Share of fills with an opposite-side fill on the same coin within 1 s.")
         el.single_trade_flag = e2[2].number_input("Flag when one trade is above this share of PnL", 0.0, 1.0,
                                                   el0.single_trade_flag, 0.05)
+        el.rank_truncated = e2[3].checkbox("Rank truncated histories on windows they don't cover", el0.rank_truncated,
+                                           help="Off: a trader whose fills cover < 98% of their all-time volume is "
+                                                "ranked only on windows their fills fully cover.")
         st.caption("Defaults live in config.yaml under trade_review > eligibility.")
 
     top, allrows = lbm.board(rcon, window, sort, venue=venue, el=el)
@@ -159,6 +149,10 @@ def render_board(rcon, cfg) -> None:
         st.info("No traders analysed yet. The first build runs in the background (about an hour at the venue's "
                 "rate limit); click **Refresh now** to start it straight away.")
         return
+    n_trunc = int(allrows["exclusion"].str.contains("history truncated", regex=False).sum())
+    if n_trunc:
+        st.caption(f"{n_trunc} trader(s) left out of this window because their fill history is truncated and "
+                   "doesn't cover it (see Excluded candidates; adjustable under Eligibility filters).")
     if len(top) < 100:
         st.warning(f"{len(top)} eligible traders so far for this window: the background sync is still working "
                    f"through the {stt['pool'] or 0} candidates ({stt['with_metrics']} analysed).")
@@ -173,13 +167,21 @@ def render_board(rcon, cfg) -> None:
         st.markdown(METHOD_NOTES)
 
 
+def trader_link(account_id: str, venue: str = "hyperliquid") -> str:
+    """Relative link that opens this dashboard on Trade review > Trader review for
+    one account (the tab and view are URL-bound, see app.py)."""
+    return f"?tab=Trade+review&review=Trader+review&trader={account_id}&venue={venue}"
+
+
+TRADER_LINK_TEXT = r"trader=(0x[0-9a-fA-F]+)"
+
+
 def _board_table(top: pd.DataFrame, venue: str = "hyperliquid") -> pd.DataFrame:
     m = top["metrics_json"].map(json.loads)
     get = lambda k: m.map(lambda d: d.get(k))          # noqa: E731
     return pd.DataFrame({
         "Rank": top["rank"].values,
-        "Venue": venues.get(venue).label,
-        "Trader": [f"?trader={a}&venue={venue}" for a in top["account_id"]],
+        "Trader": [trader_link(a, venue) for a in top["account_id"]],
         "Account value": get("account_value").values,
         "PnL": top["pnl"].values,
         "Return on equity": top["roe"].values,
@@ -206,8 +208,8 @@ def _board_table(top: pd.DataFrame, venue: str = "hyperliquid") -> pd.DataFrame:
 def _board_columns() -> dict:
     N = st.column_config.NumberColumn
     return {
-        "Trader": st.column_config.LinkColumn("Trader", display_text=r"\?trader=([0-9a-zx]+)",
-                                              help="Opens the trader's review"),
+        "Trader": st.column_config.LinkColumn("Trader", display_text=TRADER_LINK_TEXT,
+                                              help="Opens the trader's review in a new tab"),
         "Account value": N(format="$%,.0f"), "PnL": N(format="dollar"),
         "Return on equity": N(format="percent"), "Max drawdown": N(format="percent"),
         "Max drawdown ($)": N(format="dollar"), "Sharpe": N(format="%.2f"), "Sortino": N(format="%.2f"),
@@ -226,28 +228,20 @@ METHOD_NOTES = """
 - **Windows are whole UTC days** ending today. Hyperliquid's own week/month figures are rolling from the current
   minute, so short windows can differ from the venue's numbers by a day's price move; on a real wallet checked in the
   tests, 30-day P&L matches Hyperliquid's within 1%.
-- **Return on equity** is time-weighted: each day's P&L divided by the account value at the end of the previous day
-  (Hyperliquid's account-value history), compounded. Deposits and withdrawals change equity but are not returns.
+- **Return on equity** is time-weighted and transfer-adjusted: each day's change in account value (Hyperliquid's
+  account-value history) minus that day's deposits, withdrawals and transfers (the account's ledger), divided by the
+  previous day's account value, compounded. A day without its own account-value observation uses that day's P&L
+  instead. Accounts whose ledger hasn't been fetched are flagged "returns not transfer-adjusted".
   **Sharpe / Sortino** use those daily returns, annualized with √365; under ~20 days they are noisy.
-- **History truncation:** Hyperliquid's free API keeps only each wallet's 10,000 most recent fills. Wallets that hit
-  it (or whose fills cover less than 98% of the venue's all-time volume) are flagged "history truncated", and their
-  long windows only cover the period the fills cover ("window only partly covered").
+- **History truncation:** fills are fetched back in time windows until the start of the venue. A wallet whose fills
+  still cover less than 98% of the venue's all-time volume for it is flagged "history truncated" and, by default, is
+  ranked only on windows its fills fully cover (never on "All history"); the Eligibility filters can change that.
 - **Position gaps:** if a position changes without a fill in the history (seen on a delisted builder perp), the trip
   is closed as "exit not observed" and counted on the trader page; its P&L can't be reconstructed.
 - **Eligibility** uses the whole available history (at least 50 round trips and 10 active days), so a 7-day board
   still requires an established trader. Market makers: more than 2,000 fills per active day, or more than 80% maker
   fills with a sub-minute median hold, or more than 30% of fills quoted on both sides within a second. Vaults are
   identified from Hyperliquid's vault records.
-- **Lighter:** no public P&L leaderboard, so candidates are accounts seen in the latest trades of its most traded
-  markets (sampled every 15 minutes), ranked by each account's own daily P&L history; accounts that trade often are
-  more likely to be found. Fills come with the account's position and entry cost before each trade, so closed P&L is
-  computed from them. An account's funding payments aren't public: funding is **estimated** (position each hour x the
-  market's hourly rate x the hourly close). Account value = deposits - withdrawals + cumulative P&L, from Lighter's
-  daily P&L history.
-- **GMX (Arbitrum):** candidates from GMX's own per-account stats. Every order fills at the oracle price plus a price
-  impact (no order book, no maker/taker); long and short positions on a market are separate. Each trip's net P&L
-  equals GMX's own realised P&L after fees, price impact, borrowing and funding paid. There is no account-value
-  history, so returns are on the account's maximum capital in positions (GMX's own P&L % denominator).
 - **Candidates** (Hyperliquid) come from Hyperliquid's unofficial stats file (top 1,000 by PnL in each of its windows, accounts with no trading volume dropped). A trader
   outside those lists can't appear here; that's a selection bias of this board, shown here rather than hidden.
 """
@@ -273,13 +267,12 @@ def _positions(address: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-EXPLORER = {"hyperliquid": ("Hyperliquid", "https://app.hyperliquid.xyz/explorer/address/{}"),
-            "gmx": ("GMX", "https://app.gmx.io/#/accounts/{}")}
+EXPLORER = {"hyperliquid": ("Hyperliquid", "https://app.hyperliquid.xyz/explorer/address/{}")}
 
 
 def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
     qv = st.query_params.get("venue")
-    venue = qv if qv in venues.VENUES else st.session_state.get("tl-venue") or "hyperliquid"
+    venue = qv if qv in venues.VENUES else "hyperliquid"
     analysed = pd.read_sql_query("SELECT DISTINCT account_id FROM tr_metrics WHERE venue=? AND eligible=1",
                                  rcon, params=(venue,))["account_id"].tolist()
     sources = ["Leaderboard trader", "Random draw (original rule)"]
@@ -313,18 +306,14 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
         st.markdown(f"Trader: `{addr}` ([view on {name}]({url.format(addr)}))")
     else:
         st.markdown(f"Trader: {venues.LABELS.get(venue, venue)} account `{addr}`")
-    caps = venues.get(venue).caps
-    if venue != "hyperliquid" and caps.notes:
-        st.caption(" ".join(caps.notes.values()))
+    st.caption(returns_note(rcon, venue, addr))
     view = st.segmented_control("Trader view", ["Review", "Diagnosis", "Backtest & Improve", "Data quality"],
                                 default="Review",
                                 key="tr-view", label_visibility="collapsed") or "Review"
     if view == "Review":
-        est = " (estimated: the venue doesn't publish an account's funding)" if getattr(venues.get(venue),
-                                                                                        "funding_estimated", False) else ""
         render_review(to_legacy(trips) if not trips.empty else pd.DataFrame(), fills["ts"], acct_now,
                       _positions(addr) if venue == "hyperliquid" else pd.DataFrame(),
-                      note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net{est}). "
+                      note=f"Includes funding ({money(trips['funding'].sum() if not trips.empty else 0)} net). "
                            "Actual results only; simulated ones are on Backtest & Improve, labelled.",
                       venue=venue)
     elif view == "Diagnosis":
@@ -341,6 +330,20 @@ def render_trader_page(con, rcon, cfg, qp_trader: str | None) -> None:
         render_data_quality(fills, funding, trips, rep, sync, ui_diagnosis.result(rcon, addr, trips, venue), venue)
 
 
+def returns_note(rcon, venue: str, addr: str) -> str:
+    """One line saying whether this trader's returns (ROE, Sharpe, Sortino) are transfer-adjusted."""
+    r = rcon.execute("SELECT metrics_json FROM tr_metrics WHERE venue=? AND account_id=? AND window='all'",
+                     (venue, addr)).fetchone()
+    m = json.loads(r[0]) if r and r[0] else {}
+    if not m:
+        return "Returns not computed yet."
+    if not m.get("transfer_adjusted"):
+        return ("Returns (ROE, Sharpe, Sortino) are **not transfer-adjusted**: this account's ledger hasn't been "
+                "fetched yet, so deposits and withdrawals can distort them. Sync to fetch it.")
+    return (f"Returns (ROE, Sharpe, Sortino) are **transfer-adjusted**: {m.get('transfer_days', 0)} day(s) with deposits, "
+            f"withdrawals or transfers, net {money(m.get('transfers', 0)).replace('$', chr(92) + '$')}, are taken out of the account-value change.")
+
+
 def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = None, venue: str = "hyperliquid") -> None:
     from . import ui_diagnosis
     ad = venues.get(venue)
@@ -348,10 +351,10 @@ def render_data_quality(fills, funding, trips, rep, sync, diag: dict | None = No
     with st.container():
         cov = sync.get("volume_coverage")
         rows = [
-            ("Fills stored", f"{len(fills):,}", f"The newest {getattr(ad, 'FILLS_CAP', 10_000):,} per account are kept."),
+            ("Fills stored", f"{len(fills):,}", "Fetched back in time windows to the start of the venue."),
             ("History", f"{fills['ts'].min():%d %b %Y} to {fills['ts'].max():%d %b %Y}", ""),
             ("History truncated", "Yes" if sync.get("history_truncated") else "No",
-             "Yes when the account hit the fill cap or our fills cover < 98% of its all-time volume."),
+             "Yes when our fills cover < 98% of its all-time volume. Then it is ranked only on windows its fills cover."),
             ("Volume covered", f"{cov:.1%}" if isinstance(cov, (int, float)) and cov == cov else "n/a",
              f"Our fills' notional / {vname}'s all-time volume for the account."),
             ("Fills of a position opened before the history", f"{rep['excluded_fills']:,}",
@@ -419,17 +422,14 @@ def render_review(trips: pd.DataFrame, fill_times: pd.Series, acct_now: float, p
         closed = closed[~closed["exit_unobserved"]]
     stt = tr.stats(closed)
     m = st.columns(6)
-    m[0].metric("Max capital" if venue == "gmx" else "Account value", money(acct_now),
-                help="GMX has no account-value history: the account's largest capital in positions stands in for "
-                     "it." if venue == "gmx" else None)
+    m[0].metric("Account value", money(acct_now))
     m[1].metric("Closed trades", f"{stt.get('trades', 0):,}")
     m[2].metric("Win rate", f"{stt.get('win_rate', np.nan):.0%}" if stt else "n/a")
     m[3].metric("Profit factor", f"{stt.get('profit_factor', np.nan):.2f}" if stt else "n/a")
     m[4].metric("Net P&L (after fees)", money(stt.get("net_pnl", 0)))
     m[5].metric("Max drawdown", money(stt.get("max_drawdown", 0)))
     st.caption(f"{len(fill_times):,} fills from {fill_times.min():%d %b %Y} to {fill_times.max():%d %b %Y} "
-               f"({venues.LABELS.get(venue, venue)}: the newest "
-               f"{getattr(venues.get(venue), 'FILLS_CAP', 10_000):,} fills per account are kept). {note}")
+               f"({venues.LABELS.get(venue, venue)}). {note}")
     if stt:
         m2 = st.columns(6)
         m2[0].metric("Expectancy / trade", money(stt["expectancy"], 2))
@@ -440,9 +440,7 @@ def render_review(trips: pd.DataFrame, fill_times: pd.Series, acct_now: float, p
         m2[4].metric("Median hold, winners", tr.duration(stt["median_hold_win_h"]))
         m2[5].metric("Median hold, losers", tr.duration(stt["median_hold_loss_h"]))
         extra = {"hyperliquid": " Markets named 'xyz:...' are Hyperliquid's builder-deployed perps on stocks, indices "
-                                "and commodities (e.g. xyz:SP500).",
-                 "gmx": " GMX keeps long and short positions on a market separate, so each side is listed as its "
-                        "own market ('ETH long', 'ETH short')."}.get(venue, "")
+                                "and commodities (e.g. xyz:SP500)."}.get(venue, "")
         st.caption(f"Longest losing streak: {stt['longest_losing_streak']} trades.{extra}")
         eqc = closed.sort_values("close_time")
         curve = eqc["net"].cumsum()

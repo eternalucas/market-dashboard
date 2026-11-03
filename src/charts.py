@@ -9,6 +9,7 @@ control-bar state (range, resolution, scale, moving average, price overlay).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -65,6 +66,7 @@ class Spec:
     xlabel: str = ""               # for xy / overlay charts
     reverse: bool = False          # flip the metric axis (ranks: 1 at the top)
     yrange: tuple | None = None    # fixed metric-axis range, e.g. (0, 1) for scores
+    agg: str = ""                  # intraday -> daily: "mean" (levels), "sum" (flows), "last"; "" = guess
 
 
 # ---------------------------------------------------------------- formatting
@@ -105,6 +107,105 @@ PREFIX = {"usd": "$"}
 SUFFIX = {"pct": "%", "btc": " BTC", "hs": "H/s"}
 
 
+# ---------------------------------------------------------------- labels
+_ACRONYMS = {"us", "ez", "eu", "uk", "cpi", "ppi", "pce", "hicp", "yoy", "gdp", "lei", "m2", "ecb", "btc", "eth",
+             "etf", "etfs", "usd", "eur", "oi", "atm", "iv", "mvrv", "nupl", "sopr", "utxo", "dex", "cex", "otc", "hl"}
+_DATE_LIKE = re.compile(r"^\d{4}[-_]\d{2}([-_]\d{2})?$")
+
+
+def series_label(name) -> str:
+    """Series name as shown on a chart: 'fed_balance_sheet' -> 'Fed balance sheet',
+    'us_core_cpi_yoy' -> 'US core CPI YoY'. Names that already read as text, and
+    dates such as '2026_10_01', are left alone."""
+    s = str(name)
+    if "_" not in s or _DATE_LIKE.match(s):
+        return s
+    words = [w for w in s.split("_") if w]
+    out = []
+    for i, w in enumerate(words):
+        lw = w.lower()
+        if lw == "yoy":
+            out.append("YoY")
+        elif lw in _ACRONYMS:
+            out.append(lw.upper())
+        else:
+            out.append(w[:1].upper() + w[1:] if i == 0 else w)
+    return " ".join(out)
+
+
+def _connected(s: pd.Series) -> pd.Series:
+    """A series' own points, joined by a line: drops the empty rows a weekly or
+    monthly series has on a daily index (otherwise every point is isolated and the
+    line is invisible), but keeps a break wherever the series itself has a real
+    gap (more than 5 of its usual steps), so missing data is never drawn over."""
+    s = s.dropna()
+    if len(s) < 3 or not isinstance(s.index, pd.DatetimeIndex):
+        return s
+    gaps = s.index.to_series().diff()
+    step = gaps.median()
+    breaks = s.index[gaps > 5 * step] if pd.notna(step) and step > pd.Timedelta(0) else []
+    if len(breaks):
+        nan_at = pd.DatetimeIndex(breaks) - pd.Timedelta(microseconds=1)
+        s = pd.concat([s, pd.Series(np.nan, index=nan_at)]).sort_index()
+    return s
+
+
+def stale_after(step: pd.Timedelta) -> pd.Timedelta:
+    """How long after its last point a series with this cadence counts as stale."""
+    d = step / pd.Timedelta(days=1) if pd.notna(step) else 1.0
+    for cadence, limit in ((1.5, 3), (8, 14), (32, 45), (95, 120)):
+        if d <= cadence:
+            return pd.Timedelta(days=limit)
+    return pd.Timedelta(days=400)
+
+
+def _cadence(s: pd.Series) -> pd.Timedelta:
+    return s.dropna().index.to_series().diff().median()
+
+
+def _ended(df: pd.DataFrame) -> dict:
+    """Columns whose data stops well before the rest of the chart (stale, discontinued
+    or annual): {column: "Oct 2026"}, so the legend says why the line ends. 'Well
+    before' depends on the column's own cadence (see stale_after)."""
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex) or df.shape[1] < 2:
+        return {}
+    end = df.index.max()
+    out = {}
+    for c in df.columns:
+        t = df[c].last_valid_index()
+        if t is not None and end - t > stale_after(_cadence(df[c])):
+            out[c] = f"{t:%b %Y}"
+    return out
+
+
+def today_utc(index: pd.DatetimeIndex) -> pd.Timestamp:
+    now = pd.Timestamp.now(tz="UTC").normalize()
+    return now if index.tz is not None else now.tz_localize(None)
+
+
+def complete_days(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop today's unfinished UTC day. One rule for every daily view and headline:
+    a bar stamped today (an in-progress daily candle, or today's hours resampled to a
+    day) is not a full day, so it is neither drawn nor headlined."""
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    return df[df.index < today_utc(df.index)]
+
+
+def last_data_note(data) -> str:
+    """'Last data: 30 Aug 2026' when the series' newest point is older than its
+    cadence allows (daily > 3 days, monthly > 45 days, ...); else ''."""
+    df = _frame(data)
+    if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return ""
+    s = df.dropna(how="all")
+    if s.empty:
+        return ""
+    last = s.index.max()
+    step = s.index.to_series().diff().median()
+    return f"Last data: {last:%d %b %Y}" if today_utc(s.index) - last.normalize() > stale_after(step) else ""
+
+
 # ---------------------------------------------------------------- data shaping
 def _frame(data, name: str = "value") -> pd.DataFrame:
     if data is None:
@@ -134,16 +235,17 @@ def window(df: pd.DataFrame, opts: Opts) -> pd.DataFrame:
 
 
 def resample(df: pd.DataFrame, opts: Opts, spec: Spec) -> pd.DataFrame:
-    """24h: one point per UTC day (last); 1h: hourly where the data is intraday."""
+    """24h: one point per complete UTC day (spec.agg: mean for levels, sum for flows;
+    default sum for usd/btc/count bars, else last); 1h: hourly where the data is intraday."""
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return df
     if opts.resolution == "1h" and spec.intraday:
         return df.resample("1h").last().dropna(how="all")
     step = df.index.to_series().diff().median()
     if pd.notna(step) and step < pd.Timedelta(hours=23):
-        how = "sum" if spec.kind in ("bars", "bars_pn") and spec.unit in ("usd", "btc", "count") else "last"
-        return getattr(df.resample("1D"), how)().dropna(how="all")
-    return df
+        how = spec.agg or ("sum" if spec.kind in ("bars", "bars_pn") and spec.unit in ("usd", "btc", "count") else "last")
+        df = getattr(df.resample("1D"), how)().dropna(how="all")
+    return complete_days(df)
 
 
 # ---------------------------------------------------------------- figure
@@ -179,7 +281,12 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
     df = _frame(data, spec.title)
     if spec.columns:
         df = df[[c for c in spec.columns if c in df.columns]]
-    df = window(resample(df, opts, spec), opts)
+    df = resample(df, opts, spec)
+    ended = _ended(df)
+    df = window(df, opts)
+
+    def name_of(col) -> str:
+        return series_label(col) + (f" (last data {ended[col]})" if col in ended else "")
     log = spec.log if opts.log is None else opts.log
     timeseries = isinstance(df.index, pd.DatetimeIndex) and spec.kind not in ("xy", "heatmap", "overlay")
     show_price = bool(opts.price and spec.price and timeseries and price is not None and not price.empty and not df.empty)
@@ -209,9 +316,10 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
         fig.update_layout(xaxis_rangeslider_visible=False)
     elif k in ("xy", "overlay"):
         for i, col in enumerate(df.columns):
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=str(col), mode="lines",
+            s = _connected(df[col])
+            fig.add_trace(go.Scatter(x=s.index, y=s, name=name_of(col), mode="lines",
                                      line=dict(width=1.6, color=PALETTE[i % len(PALETTE)]),
-                                     hovertemplate=hov + "<extra>" + str(col) + "</extra>"))
+                                     hovertemplate=hov + "<extra>" + name_of(col) + "</extra>"))
     elif k == "bars_pn":
         col = df.columns[0]
         s = df[col]
@@ -221,13 +329,13 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
                              hovertemplate=hov + "<extra></extra>", showlegend=False))
     elif k == "bars":
         for i, col in enumerate(df.columns):
-            fig.add_trace(go.Bar(x=df.index, y=df[col], name=str(col), marker_color=PALETTE[i % len(PALETTE)],
-                                 marker_line_width=0, hovertemplate=hov + "<extra>" + str(col) + "</extra>"))
+            fig.add_trace(go.Bar(x=df.index, y=df[col], name=name_of(col), marker_color=PALETTE[i % len(PALETTE)],
+                                 marker_line_width=0, hovertemplate=hov + "<extra>" + name_of(col) + "</extra>"))
     elif k == "stacked":
         for i, col in enumerate(df.columns):
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=str(col), stackgroup="one", mode="lines",
+            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=name_of(col), stackgroup="one", mode="lines",
                                      line=dict(width=0.5, color=PALETTE[i % len(PALETTE)]),
-                                     hovertemplate=hov + "<extra>" + str(col) + "</extra>"))
+                                     hovertemplate=hov + "<extra>" + name_of(col) + "</extra>"))
     elif k == "area_pn":
         s = df.iloc[:, 0]
         fig.add_trace(go.Scatter(x=s.index, y=s.clip(lower=0), fill="tozeroy", mode="lines", name=f"{spec.title} (+)",
@@ -239,8 +347,9 @@ def render(spec: Spec, data, price: pd.Series | None, opts: Opts) -> go.Figure:
         for i, col in enumerate(df.columns):
             colour = ACCENT if (len(df.columns) == 1) else PALETTE[i % len(PALETTE)]
             fill = "tozeroy" if k == "area" else None
-            sparse = df[col].notna().sum() < 3
-            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=spec.title if len(df.columns) == 1 else str(col),
+            s = _connected(df[col])
+            sparse = s.notna().sum() < 3
+            fig.add_trace(go.Scatter(x=s.index, y=s, name=spec.title if len(df.columns) == 1 else name_of(col),
                                      mode="lines+markers" if sparse else "lines", marker=dict(size=6), line=dict(width=1.4, color=colour), fill=fill,
                                      fillcolor="rgba(247,147,26,0.15)" if fill else None,
                                      hovertemplate=hov + "<extra></extra>"))
@@ -335,6 +444,7 @@ def latest_value(data, unit: str, kind: str = "line") -> str:
         return "-"
     if kind == "bars" and df.shape[1] > 1 and unit in ("pct", "frac_pct"):
         return ""                                  # shares of a total: no single headline number
+    df = complete_days(df)                         # same rule as the 24h chart: no partial day
     stacked = kind == "stacked" or (kind == "bars" and df.shape[1] > 1)
     s = df.sum(axis=1, min_count=1).dropna() if stacked else df.iloc[:, 0].dropna()
     return fmt(float(s.iloc[-1]), unit) if not s.empty else "-"

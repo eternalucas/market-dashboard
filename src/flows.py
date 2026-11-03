@@ -128,7 +128,8 @@ def load_flow(con, cfg: dict, asset: str, bar_size: str, since: pd.Timestamp | N
     ohlcv = ["o", "h", "l", "c", "v", "bv"]
     px = {ex: _frame(con, interval, s, "px", ohlcv, since) for ex, s in spot_m.items()}
     pp = {ex: _frame(con, interval, s, "px", ohlcv, since) for ex, s in perp_m.items()}
-    oi = {ex: _frame(con, interval, s, "oi", ["c"], since) for ex, s in perp_m.items()}
+    oi = {ex: coinalyze.one_sided_oi(s, _frame(con, interval, s, "oi", ["c"], since))
+          for ex, s in perp_m.items()}
     fr = {ex: _frame(con, interval, s, "fr", ["c"], since) for ex, s in perp_m.items()}
     lq = {ex: _frame(con, interval, s, "liq", ["l", "s"], since) for ex, s in perp_m.items()}
 
@@ -138,6 +139,10 @@ def load_flow(con, cfg: dict, asset: str, bar_size: str, since: pd.Timestamp | N
     fr = {k: _resample(v, rule, {"c": "mean"}) for k, v in fr.items() if not v.empty}
     lq = {k: _resample(v, rule, {"l": "sum", "s": "sum"}) for k, v in lq.items() if not v.empty}
 
+    # Payment interval per exchange, read from the hourly funding bars (the
+    # selected bar size may be too coarse to see 1h or 4h payments).
+    funding_hours = {ex: flow.payment_interval_hours(
+        storage.load_series(con, f"cz:1hour:{s}:fr_c").tail(24 * 30), ex) for ex, s in perp_m.items()}
     perp_closes = {ex: df["c"] for ex, df in pp.items() if "c" in df}
     ref = next((pp[e] for e in ("Binance", "Bybit", "OKX") if e in pp), next(iter(pp.values()), pd.DataFrame()))
     premium = pd.Series(dtype=float)
@@ -155,7 +160,7 @@ def load_flow(con, cfg: dict, asset: str, bar_size: str, since: pd.Timestamp | N
         "cvd_by_spot_exchange": {ex: flow.cvd(df) for ex, df in px.items() if {"v", "bv"} <= set(df)},
         "oi_coins": flow.oi_in_coins(oi, perp_closes),
         "oi_by_exchange": {ex: (df["c"] / perp_closes[ex].reindex(df.index)) for ex, df in oi.items() if ex in perp_closes},
-        "funding": flow.oi_weighted_funding(fr, oi),
+        "funding": flow.oi_weighted_funding(fr, oi, funding_hours),
         "liquidations": flow.liquidations(lq),
         "coinbase_premium": premium,
     }

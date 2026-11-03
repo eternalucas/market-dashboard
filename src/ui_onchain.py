@@ -84,16 +84,41 @@ def render(con, cfg: dict, category_names: dict, colors: dict, long_short=("#2a7
 # 1. Watched wallets
 # --------------------------------------------------------------------------- #
 
-def _balances(con, wl: pd.DataFrame, category_names: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(one row per wallet with balance, USD and changes; BTC held per category over time)."""
-    px_now = {}
-    for ch in ("btc", "eth"):
-        s = storage.load_series(con, f"price:{ch.upper()}")
-        px_now[ch] = s.iloc[-1] if not s.empty else np.nan
+# Price series for "today's prices", in order of preference; the freshest one
+# wins. cb1h is the recorder's hourly Coinbase close; czd / yf are refreshed by
+# the recorder's hourly "sources" job; price:* only by a manual full update.
+PRICE_SOURCES = {"btc": ["cb1h:BTC-USD:close", "czd:BTCUSDT_PERP.A:close", "price:BTC"],
+                 "eth": ["czd:ETHUSDT_PERP.A:close", "yf:ETH-USD:close", "price:ETH"]}
+# A balance reading older than this is stale (a failed fetch keeps the old
+# value): one update cycle is a day, plus slack.
+STALE_AFTER = pd.Timedelta(days=2)
+
+
+def _live_prices(con) -> dict[str, tuple[float, pd.Timestamp | None]]:
+    """{chain: (latest price, its timestamp)} from the freshest source."""
+    out = {}
+    for ch, names in PRICE_SOURCES.items():
+        best = (np.nan, None)
+        for n in names:
+            s = storage.load_series(con, n).dropna()
+            if not s.empty and (best[1] is None or s.index[-1] > best[1]):
+                best = (float(s.iloc[-1]), s.index[-1])
+        out[ch] = best
+    return out
+
+
+def _balances(con, wl: pd.DataFrame, category_names: dict, now: pd.Timestamp | None = None
+              ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(one row per wallet with balance, USD and changes; BTC held per category over time).
+    'Stale' marks wallets whose last reading is older than STALE_AFTER; their
+    Balance/USD stay in the table but must not be counted as current."""
+    now = now or pd.Timestamp.now(tz="UTC")
+    px_now = {ch: p for ch, (p, _) in _live_prices(con).items()}
     rows, hist = [], []
     for w in wl.itertuples():
         bal = storage.load_series(con, f"onchain_bal:{w.chain}:{w.address}")
         latest = bal.iloc[-1] if not bal.empty else np.nan
+        as_of = bal.index[-1] if not bal.empty else pd.NaT
 
         def chg(days, bal=bal, latest=latest):
             past = bal[bal.index <= bal.index[-1] - pd.Timedelta(days=days)] if not bal.empty else bal
@@ -102,7 +127,8 @@ def _balances(con, wl: pd.DataFrame, category_names: dict) -> tuple[pd.DataFrame
         rows.append({"Label": w.label, "Entity": w.entity, "Category": cat, "Chain": w.chain.upper(),
                      "Balance": latest, "USD": latest * px_now.get(w.chain, np.nan),
                      "Since last update": latest - bal.iloc[-2] if len(bal) >= 2 else np.nan,
-                     "Change 7d": chg(7), "Change 30d": chg(30), "Address": w.address})
+                     "Change 7d": chg(7), "Change 30d": chg(30), "As of": as_of,
+                     "Stale": bool(pd.notna(as_of) and now - as_of > STALE_AFTER), "Address": w.address})
         if w.chain == "btc" and len(bal):
             hist.append(bal.rename(cat))
     bals = pd.DataFrame(rows)
@@ -118,12 +144,23 @@ def watched_wallets(con, wl: pd.DataFrame, category_names: dict, colors: dict) -
                "explorers (mempool.space, Blockscout). Edit watchlist.yaml to add wallets, e.g. ones you see on Arkham.")
     bals, byc = _balances(con, wl, category_names)
     have = bals.dropna(subset=["Balance"])
+    stale = have[have["Stale"]]
+    have = have[~have["Stale"]]          # totals and charts count current readings only
+    px = _live_prices(con)
+    px_note = "; ".join(f"{ch.upper()} ${p:,.0f} as of {ts:%d %b %H:%M} UTC" for ch, (p, ts) in px.items() if ts is not None)
     k = st.columns(4)
     k[0].metric("Wallets watched", f"{len(wl)}", help="Bitcoin and Ethereum")
     k[1].metric("Entities", f"{wl['entity'].nunique()}")
     k[2].metric("BTC held", f"{have.loc[have['Chain'] == 'BTC', 'Balance'].sum():,.0f}",
                 help="Sum of the watched Bitcoin wallets' latest balances.")
-    k[3].metric("Value held", _usd_short(have["USD"].sum()), help="Bitcoin and Ethereum wallets at today's prices.")
+    k[3].metric("Value held", _usd_short(have["USD"].sum()), help=f"Bitcoin and Ethereum wallets at the latest prices ({px_note}). "
+                     "Wallets with no reading in the last 2 days are left out.")
+    if len(stale):
+        per_chain = "; ".join(f"{len(g)} {ch} (last read {g['As of'].min():%d %b}"
+                              + (f"–{g['As of'].max():%d %b}" if g['As of'].max().date() != g['As of'].min().date() else "")
+                              + ")" for ch, g in stale.groupby("Chain"))
+        st.warning(f"{len(stale)} wallet(s) left out of the totals, no balance reading for over 2 days: "
+                   f"{per_chain}. See 'Last reading' in the wallet table; **Update all data** re-reads them.")
     if have.empty:
         st.info("No balances yet. Run **Update all data**.")
         return
@@ -133,8 +170,9 @@ def watched_wallets(con, wl: pd.DataFrame, category_names: dict, colors: dict) -
                                                       usd=("USD", "sum")).reset_index()
         order = cat.groupby("Category")["usd"].sum().sort_values().index
         with card("oc-holdings", "Holdings by cohort", paired=True, expandable=True,
-                  desc="Value held by each cohort of watched wallets at today's prices, Bitcoin and Ethereum wallets "
-                       "stacked. Hover for the number of wallets and coins.",
+                  desc="Value held by each cohort of watched wallets at the latest prices, Bitcoin and Ethereum wallets "
+                       "stacked. Wallets with no reading in the last 2 days are left out. Hover for the number "
+                       "of wallets and coins.", latest=px_note,
                   source="mempool.space, Blockscout") as cc:
             f = go.Figure()
             for chain, color in (("BTC", "#f7931a"), ("ETH", "#8c8cff")):
@@ -164,7 +202,9 @@ def watched_wallets(con, wl: pd.DataFrame, category_names: dict, colors: dict) -
             "USD": st.column_config.NumberColumn(format="$%,.0f"),
             "Since last update": st.column_config.NumberColumn(format="%+,.2f"),
             "Change 7d": st.column_config.NumberColumn(format="%+,.2f"),
-            "Change 30d": st.column_config.NumberColumn(format="%+,.2f")})
+            "Change 30d": st.column_config.NumberColumn(format="%+,.2f"),
+            "As of": st.column_config.DatetimeColumn("Last reading", format="D MMM HH:mm"),
+            "Stale": st.column_config.CheckboxColumn("Stale (not in totals)")})
         st.caption("Blank 7-day and 30-day changes fill in once there are readings that far back.")
 
 

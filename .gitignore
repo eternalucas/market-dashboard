@@ -9,3 +9,15 @@ data/
 
 # Your settings with API keys. config.example.yaml (no keys) is the public template.
 config.yaml
+
+# Local copies and archives that must never be committed
+claude-skills/
+*.zip
+md-audit-extracts/
+.backup-*/
+
+# SQLite databases and their side files, anywhere in the tree
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

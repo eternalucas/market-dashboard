@@ -17,7 +17,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DB_PATH = Path(os.environ.get("TRADES_DB", ROOT / "data" / "trades.db"))
-ENGINE_VERSION = 2          # bump when round-trip reconstruction changes (part of the backtest cache key)
+ENGINE_VERSION = 3          # bump when round-trip reconstruction changes (part of the backtest cache key)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tr_accounts (

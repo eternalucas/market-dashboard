@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .. import venues
+from ..venues.base import VenueAdapter
 from . import equity as eq
 from . import store
 from .reconstruct import reconstruct, to_legacy
@@ -38,11 +39,16 @@ class Eligibility:
     min_median_hold_min: float = 1.0
     max_two_sided_share: float = 0.30      # fills with an opposite-side fill on the same coin within 1 s
     single_trade_flag: float = 0.50        # flag when one trade is > 50% of window PnL
+    # A truncated history ranks only on windows its fills fully cover; True ranks it on every window anyway
+    rank_truncated: bool = False
 
     @classmethod
     def from_cfg(cls, cfg: dict | None) -> "Eligibility":
         tcfg = ((cfg or {}).get("trade_review") or {}).get("eligibility") or {}
-        return cls(**{k: type(getattr(cls(), k))(v) for k, v in tcfg.items() if hasattr(cls(), k)})
+        def cast(k, v):
+            t = type(getattr(cls(), k))
+            return (str(v).strip().lower() in ("1", "true", "yes", "on")) if t is bool else t(v)
+        return cls(**{k: cast(k, v) for k, v in tcfg.items() if hasattr(cls(), k)})
 
 
 # --------------------------------------------------------------------------- #
@@ -88,7 +94,7 @@ def refresh_candidates(con, venue: str = "hyperliquid", per_window: int = 1000) 
     return pool
 
 
-POOL_MAX_AGE_H = {"hyperliquid": 6, "lighter": 24, "gmx": 12}
+POOL_MAX_AGE_H = {"hyperliquid": 6}
 
 
 def current_pool(con, venue: str = "hyperliquid", max_age_h: float | None = None, per_window: int = 1000) -> pd.DataFrame:
@@ -135,6 +141,11 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
     start = (st["cursor_ms"] + 1) if st["cursor_ms"] else 0
     new = ad.fills(acct, start)
     store.upsert(con, "tr_fills", new)
+    if st["notes"].get("history_truncated") and not st["notes"].get("backfilled"):
+        # synced before fills were paged back in time windows: fetch what precedes the stored history once
+        first = con.execute("SELECT MIN(ts) FROM tr_fills WHERE venue=? AND account_id=?", (venue, acct)).fetchone()[0]
+        if first:
+            store.upsert(con, "tr_fills", ad.fills(acct, 0, int(pd.Timestamp(first).timestamp() * 1000)))
     last = int(new["ts"].max().timestamp() * 1000) if not new.empty else st["cursor_ms"]
     n_total, first_ts = con.execute("SELECT COUNT(*), MIN(ts) FROM tr_fills WHERE venue=? AND account_id=?",
                                     (venue, acct)).fetchone()
@@ -146,6 +157,15 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
     store.upsert(con, "tr_funding", fund)
     store.set_sync(con, venue, acct, "funding",
                    int(fund["ts"].max().timestamp() * 1000) if not fund.empty else fs["cursor_ms"])
+    # deposits, withdrawals and transfers (returns are adjusted for them)
+    if type(ad).ledger is not VenueAdapter.ledger:
+        ls = store.get_sync(con, venue, acct, "ledger")
+        led = ad.ledger(acct, (ls["cursor_ms"] + 1) if ls["cursor_ms"] else 0)
+        store.upsert(con, "tr_ledger", led)
+        store.set_sync(con, venue, acct, "ledger",
+                       int(led["ts"].max().timestamp() * 1000) if not led.empty else (ls["cursor_ms"] or 0),
+                       {"rows": int(con.execute("SELECT COUNT(*) FROM tr_ledger WHERE venue=? AND account_id=?",
+                                                (venue, acct)).fetchone()[0])})
     # account value history and all-time volume (for truncation)
     pf = ad.portfolio(acct)
     snaps = []
@@ -160,73 +180,15 @@ def sync_account(con, account_id: str, venue: str = "hyperliquid", mm_fills_per_
     our_vlm = con.execute("SELECT SUM(ABS(px*sz)) FROM tr_fills WHERE venue=? AND account_id=?",
                           (venue, acct)).fetchone()[0] or 0.0
     coverage = our_vlm / venue_vlm if venue_vlm else np.nan
-    cap = getattr(ad, "FILLS_CAP", 10_000)
-    truncated = bool(n_total >= 0.95 * cap or (coverage == coverage and coverage < 0.98))
-    if getattr(ad, "funding_estimated", False):
-        _estimate_funding(con, ad, venue, acct)
+    cap = getattr(ad, "FILLS_CAP", None)          # a venue's hard per-account fill limit, if it has one
+    truncated = bool((cap and n_total >= 0.95 * cap) or (coverage == coverage and coverage < 0.98))
     store.set_sync(con, venue, acct, "fills", last, {
         "fills": n_total, "first_fill": first_ts, "venue_all_time_volume": venue_vlm, "our_volume": our_vlm,
-        "volume_coverage": coverage, "history_truncated": truncated})
+        "volume_coverage": coverage, "history_truncated": truncated, "backfilled": True})
     if prior is None:
         _set_kind(con, venue, acct, "unknown", "")
     info.update({"new_fills": len(new), "fills": n_total, "truncated": truncated, "coverage": coverage})
     return info
-
-
-def _estimate_funding(con, ad, venue: str, acct: str) -> None:
-    """Venues that don't publish an account's funding (Lighter): its
-    position at each hourly settlement x the market's rate x the hourly
-    close. Replaces the account's stored estimate."""
-    from ..venues.lighter import estimate_funding
-    fills = store.load(con, "tr_fills", venue, acct)
-    if fills.empty:
-        return
-    now_ms = int(time.time() * 1000)
-    first_ms = int(fills["ts"].min().timestamp() * 1000)
-    rates, closes = {}, {}
-    for coin in fills["coin"].unique():
-        hi = con.execute("SELECT MAX(ts) FROM tr_market_funding WHERE venue=? AND coin=?", (venue, coin)).fetchone()[0]
-        lo = con.execute("SELECT MIN(ts) FROM tr_market_funding WHERE venue=? AND coin=?", (venue, coin)).fetchone()[0]
-        try:
-            if not hi or pd.Timestamp(lo) > pd.Timestamp(first_ms, unit="ms", tz="UTC") + pd.Timedelta(hours=2):
-                store.upsert(con, "tr_market_funding", ad.market_funding(coin, first_ms))
-            elif now_ms - pd.Timestamp(hi).timestamp() * 1000 > 3_600_000:
-                store.upsert(con, "tr_market_funding", ad.market_funding(coin, int(pd.Timestamp(hi).timestamp() * 1000) + 1))
-            c = store.candles(con, venue, coin, "1h")
-            if c.empty or c.index.min() > pd.Timestamp(first_ms, unit="ms", tz="UTC") or \
-                    now_ms - c.index.max().timestamp() * 1000 > 2 * 3_600_000:
-                store.upsert(con, "tr_candles", ad.candles(coin, "1h", first_ms - 3_600_000, now_ms))
-                c = store.candles(con, venue, coin, "1h")
-        except Exception:  # noqa: BLE001 - that coin's funding is then left out (and counted)
-            continue
-        f = pd.read_sql_query("SELECT ts, rate FROM tr_market_funding WHERE venue=? AND coin=? ORDER BY ts", con,
-                              params=(venue, coin))
-        if not f.empty:
-            rates[coin] = pd.Series(f["rate"].to_numpy(), index=pd.to_datetime(f["ts"], utc=True, format="ISO8601"))
-        if not c.empty:
-            closes[coin] = c["c"]
-    est = estimate_funding(fills, rates, closes, acct, venue)
-    con.execute("DELETE FROM tr_funding WHERE venue=? AND account_id=?", (venue, acct))
-    con.commit()
-    if not est.empty:
-        store.upsert(con, "tr_funding", est)
-
-
-def sample_accounts(con, venue: str = "lighter", top_markets: int = 25) -> int:
-    """Discovery for venues without a public P&L leaderboard: accounts in
-    the latest trades of the most traded markets, accumulated in tr_seen."""
-    ad = venues.get(venue)
-    s = ad.sample_accounts(top_markets)
-    if s.empty:
-        return 0
-    now = pd.Timestamp.now(tz="UTC").isoformat()
-    con.executemany(
-        "INSERT INTO tr_seen (venue, account_id, notional, trades, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(venue, account_id) DO UPDATE SET notional = notional + excluded.notional, "
-        "trades = trades + excluded.trades, last_seen = excluded.last_seen",
-        [(venue, r.account_id, float(r.notional), int(r.trades), now, now) for r in s.itertuples()])
-    con.commit()
-    return len(s)
 
 
 def _set_kind(con, venue, acct, kind, reason):
@@ -336,6 +298,9 @@ def compute_account(con, account_id: str, venue: str = "hyperliquid", el: Eligib
     snaps = store.load(con, "tr_account_snapshots", venue, acct)
     avs = [g.set_index("ts")["account_value"] for _, g in snaps.groupby("source")] if not snaps.empty else []
     equity = eq.daily_equity(avs, daily.index) if not daily.empty else pd.Series(dtype=float)
+    flows = None                     # ledger never synced for this account: returns can't be transfer-adjusted
+    if store.get_sync(con, venue, acct, "ledger")["last_ok"] and not daily.empty:
+        flows = eq.daily_flows(store.load(con, "tr_ledger", venue, acct), avs, daily.index)
     legacy = to_legacy(trips) if not trips.empty else pd.DataFrame(columns=["open", "close_time", "net"])
     sync = store.get_sync(con, venue, acct, "fills")["notes"]
     all_closed = trips[~trips["is_open"] & ~trips["exit_unobserved"]] if not trips.empty else trips
@@ -343,7 +308,7 @@ def compute_account(con, account_id: str, venue: str = "hyperliquid", el: Eligib
                 "active_days_all": int(fills["ts"].dt.floor("D").nunique()) if not fills.empty else 0}
     rows = []
     for w, days in eq.WINDOWS.items():
-        m = eq.window_metrics(daily, equity, legacy, days, now)
+        m = eq.window_metrics(daily, equity, legacy, days, now, flows)
         m.update(beh)
         m.update(lifetime)
         m["report"] = rep
@@ -364,6 +329,8 @@ def compute_account(con, account_id: str, venue: str = "hyperliquid", el: Eligib
             flags.append(f"one trade = {m['top_trade_share']:.0%} of PnL")
         if m["history_truncated"]:
             flags.append("history truncated")
+        if not m["transfer_adjusted"]:
+            flags.append("returns not transfer-adjusted")
         if m["window_partial"]:
             flags.append("window only partly covered")
         if m["missing_price_days"]:
@@ -451,8 +418,9 @@ def board(con, window: str, sort: str = "Total PnL", venue: str | None = None, n
     reasons = []
     for r, d in zip(df.itertuples(), m):
         why = []
-        if r.exclusion and (r.exclusion.startswith("market maker") or r.exclusion.startswith("vault")):
-            why.append(r.exclusion.split(";")[0])
+        stored = r.exclusion if isinstance(r.exclusion, str) else ""       # NULL in the database reads as NaN
+        if stored.startswith("market maker") or stored.startswith("vault"):
+            why.append(stored.split(";")[0])
         else:
             if d.get("trips_all", 0) < el.min_trips:
                 why.append(f"{d.get('trips_all', 0)} round trips (< {el.min_trips})")
@@ -460,6 +428,10 @@ def board(con, window: str, sort: str = "Total PnL", venue: str | None = None, n
                 why.append(f"{d.get('active_days_all', 0)} active days (< {el.min_active_days})")
             if r.active_days == 0:
                 why.append("no trading in this window")
+            if d.get("history_truncated") and (d.get("window_partial") or window == "all") and not el.rank_truncated:
+                cov = d.get("volume_coverage")
+                why.append("history truncated: fills don't cover this window"
+                           + (f" ({cov:.0%} of all-time volume)" if isinstance(cov, (int, float)) and cov == cov else ""))
             beh_mm, beh_reason = classify(d, None, el) if d else ("trader", "")
             if beh_mm == "market_maker":
                 why.append(f"market maker: {beh_reason}")

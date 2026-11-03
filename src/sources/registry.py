@@ -37,10 +37,18 @@ SOURCES = [  # (name, function(con, cfg), freshness)
 ]
 
 
+ZERO_ROWS_MSG = "returned 0 rows"
+
+
 def _fresh(con, name: str, window: pd.Timedelta) -> bool:
-    last = storage.last_success(con, f"src:{name}")
-    if last is None:
+    """True when the source last stored rows less than `window` ago. A run
+    that succeeded but stored nothing does not count, so it is retried at
+    the next hourly check instead of waiting out the window."""
+    row = con.execute("SELECT MAX(ts) FROM fetch_log WHERE source = ? AND ok = 1 AND rows > 0",
+                      (f"src:{name}",)).fetchone()
+    if not row or not row[0]:
         return False
+    last = pd.Timestamp(row[0])
     last = last.tz_localize("UTC") if last.tzinfo is None else last.tz_convert("UTC")
     return pd.Timestamp.now(tz="UTC") - last < window
 
@@ -55,7 +63,7 @@ def update_all(con, cfg: dict, force: bool = False, say=print) -> dict:
         say(f"Updating {name}...")
         try:
             rows = fn(con, cfg) or 0
-            storage.log_fetch(con, f"src:{name}", True, rows)
+            storage.log_fetch(con, f"src:{name}", True, rows, "" if rows else ZERO_ROWS_MSG)
             done[name] = rows
         except Exception as e:  # noqa: BLE001 - one source failing never stops the others
             storage.log_fetch(con, f"src:{name}", False, 0, f"{type(e).__name__}: {e}")

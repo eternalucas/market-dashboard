@@ -24,10 +24,14 @@ after), so a backtest never sees a week's count before the week is over.
 """
 from __future__ import annotations
 
+import threading
 import time
+import traceback
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
+
+import requests
 
 from .. import storage
 from ..collectors import attention
@@ -64,14 +68,29 @@ GDELT_QUERY = "(bitcoin OR cryptocurrency OR crypto)"
 DAY = pd.Timedelta(days=1)
 
 
+_run = threading.local()      # per-thread list of the inputs that failed during the current update()
+
+
+def _record(con, source: str, ok: bool, rows: int, message: str = "") -> None:
+    """Best-effort fetch-log write: log_fetch already retries a locked
+    database; if it still fails, the update carries on without the row."""
+    try:
+        storage.log_fetch(con, source, ok, rows, message)
+    except Exception:  # noqa: BLE001 - a logging failure must never abort the update
+        traceback.print_exc()
+
+
 def _log(con, source: str, fn) -> int:
     try:
         rows = fn() or 0
-        storage.log_fetch(con, source, True, rows)
-        return rows
     except Exception as e:  # noqa: BLE001 - one input failing never stops the rest
-        storage.log_fetch(con, source, False, 0, f"{type(e).__name__}: {e}")
+        msg = f"{type(e).__name__}: {e}"
+        if getattr(_run, "failed", None) is not None:
+            _run.failed.append(f"{source}: {msg}")
+        _record(con, source, False, 0, msg)
         return 0
+    _record(con, source, True, rows)
+    return rows
 
 
 def _due(con, source: str, every: pd.Timedelta) -> bool:
@@ -119,20 +138,41 @@ def _start_for(con, name: str) -> date:
     return date(2015, 7, 1) if s.empty else (s.index[-1] - 10 * DAY).date()
 
 
+WIKI_PACE_S = 0.25          # at most 4 Wikimedia requests a second
+
+
 def update_wikipedia(con, cfg) -> int:
-    rows = 0
-    for project, article, name in wiki_articles(cfg):
-        if not _due(con, f"wikipedia:{project}:{article}", 20 * pd.Timedelta(hours=1)):
+    """Every due article, then every due project total, paced WIKI_PACE_S
+    apart. After a 429 that outlasted get_json's backoff, the rest of this
+    run is skipped (they would all be rate limited too) and retried next hour."""
+    jobs = [(f"wikipedia:{project}:{article}", lambda project=project, article=article, name=name:
+             storage.save_series(con, name, attention.wikipedia_pageviews(
+                 article, start=_start_for(con, name), project=project)))
+            for project, article, name in wiki_articles(cfg)]
+    jobs += [(f"wikitotal:{project}", lambda project=project, name=f"wikitotal:{project}":
+              storage.save_series(con, name, project_total(project, _start_for(con, name))))
+             for project in dict.fromkeys(p for p, _, _ in wiki_articles(cfg))]
+    rows, limited = 0, [False]
+
+    def guarded(fn):
+        def call():
+            try:
+                return fn()
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 429:
+                    limited[0] = True
+                raise
+        return call
+    first = True
+    for source, fn in jobs:
+        if limited[0]:
+            break
+        if not _due(con, source, 20 * pd.Timedelta(hours=1)):
             continue
-        rows += _log(con, f"wikipedia:{project}:{article}", lambda project=project, article=article, name=name:
-                     storage.save_series(con, name, attention.wikipedia_pageviews(
-                         article, start=_start_for(con, name), project=project)))
-    for project in dict.fromkeys(p for p, _, _ in wiki_articles(cfg)):
-        name = f"wikitotal:{project}"
-        if not _due(con, f"wikitotal:{project}", 20 * pd.Timedelta(hours=1)):
-            continue
-        rows += _log(con, f"wikitotal:{project}", lambda project=project, name=name:
-                     storage.save_series(con, name, project_total(project, _start_for(con, name))))
+        if not first:
+            time.sleep(WIKI_PACE_S)
+        first = False
+        rows += _log(con, source, guarded(fn))
     return rows
 
 
@@ -295,6 +335,23 @@ def update_gdelt(con, cfg) -> int:
 # Entry point used by the source registry
 # --------------------------------------------------------------------------- #
 def update(con, cfg) -> int:
+    """Run every due input. When inputs failed and nothing was stored, raise
+    (the registry then logs src:social ok=0); when some failed but others
+    stored rows, log social:partial ok=0 and return the rows."""
+    _run.failed = []
+    try:
+        rows = _update(con, cfg)
+        failed = list(_run.failed)
+    finally:
+        _run.failed = None
+    if failed and not rows:
+        raise RuntimeError(f"{len(failed)} inputs failed, 0 rows: " + "; ".join(failed[:5]))
+    if failed:
+        _record(con, "social:partial", False, rows, f"{len(failed)} inputs failed: " + "; ".join(failed[:5]))
+    return rows
+
+
+def _update(con, cfg) -> int:
     rows = 0
     rows += update_wikipedia(con, cfg)
     rows += update_app_store(con, cfg)

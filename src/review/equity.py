@@ -9,9 +9,16 @@ over a period this equals realized P&L - fees + funding + the change in
 unrealized P&L, without needing entry prices, so it also works when the
 history starts mid-position.
 
-Returns are time-weighted: r_d = pnl_d / equity at the end of the previous
-day, where equity is the venue's own account-value history. Deposits and
-withdrawals change equity but are not returns.
+Returns are time-weighted and transfer-adjusted:
+    r_d = (equity_d - equity_{d-1} - net external transfers_d) / equity_{d-1}
+where equity is the venue's own account-value history (its last observation
+of each UTC day) and transfers come from the account's ledger (deposits,
+withdrawals, sends, vault deposits/withdrawals; see
+venues.hyperliquid.EXTERNAL_FLOWS). A transfer belongs to the day of the
+first equity observation that includes it. On a day without its own equity
+observation (or the day after one) the estimate is pnl_d / equity_{d-1}.
+Without ledger data every day uses that estimate and the result is marked
+"not transfer-adjusted".
 """
 from __future__ import annotations
 
@@ -19,6 +26,8 @@ import math
 
 import numpy as np
 import pandas as pd
+
+from .reconstruct import order_fills
 
 WINDOWS = {"7d": 7, "30d": 30, "90d": 90, "all": None}
 
@@ -30,7 +39,7 @@ def daily_pnl(fills: pd.DataFrame, funding: pd.DataFrame | None, closes: dict[st
     if fills is None or fills.empty:
         return pd.DataFrame(columns=["mtm", "realized", "fees", "funding", "fills", "missing_price"])
     end = (end or pd.Timestamp.now(tz="UTC")).normalize()
-    f = fills.sort_values("ts").copy()
+    f = order_fills(fills)                       # same-millisecond fills in position-chain order
     f["day"] = f["ts"].dt.floor("D")
     f["signed"] = np.where(f["side"] == "B", f["sz"], -f["sz"])
     days = pd.date_range(f["day"].min(), end, freq="D", tz="UTC")
@@ -85,24 +94,62 @@ def daily_pnl(fills: pd.DataFrame, funding: pd.DataFrame | None, closes: dict[st
     return out
 
 
-def daily_equity(account_values: list[pd.Series], days: pd.DatetimeIndex) -> pd.Series:
-    """End-of-day account value from the venue's history (the finest series
-    wins where several overlap); carried forward between observations."""
+def equity_observations(account_values: list[pd.Series]) -> pd.Series:
+    """Every account-value observation, the finest series winning where several overlap."""
     merged = pd.Series(dtype=float)
     for s in sorted([s for s in account_values if s is not None and not s.empty], key=lambda s: -len(s) / max(
             (s.index[-1] - s.index[0]).total_seconds(), 1)):
         merged = merged.combine_first(s) if not merged.empty else s.copy()
+    return merged.sort_index()
+
+
+def daily_equity(account_values: list[pd.Series], days: pd.DatetimeIndex) -> pd.Series:
+    """End-of-day account value from the venue's history (the finest series
+    wins where several overlap); carried forward between observations."""
+    merged = equity_observations(account_values)
     if merged.empty:
         return pd.Series(np.nan, index=days)
-    merged = merged.sort_index()
     eod = merged.resample("1D").last().reindex(days).ffill()
     eod[eod.index < merged.index[0].floor("D")] = np.nan
     return eod
 
 
+def daily_flows(ledger: pd.DataFrame | None, account_values: list[pd.Series], days: pd.DatetimeIndex,
+                external: frozenset | set | None = None) -> pd.DataFrame:
+    """Per day: "flow" = net external transfers (+ in) belonging to that day,
+    "fresh" = the day has its own equity observation. A transfer belongs to
+    the day of the first observation at or after it (the first equity figure
+    that includes it); one after the last observation stays on its own day."""
+    if external is None:
+        from ..venues.hyperliquid import EXTERNAL_FLOWS as external
+    obs = equity_observations(account_values)
+    out = pd.DataFrame({"flow": 0.0, "fresh": False}, index=days)
+    if not obs.empty:
+        out["fresh"] = days.isin(obs.index.floor("D").unique())
+    if ledger is None or ledger.empty:
+        return out
+    lg = ledger[ledger["kind"].isin(external)]
+    if lg.empty:
+        return out
+    ts = pd.DatetimeIndex(lg["ts"])
+    if not obs.empty:
+        pos = obs.index.searchsorted(ts, side="left")
+        after = pos < len(obs)
+        day = ts.floor("D").to_numpy().copy()
+        day[after] = obs.index[pos[after]].floor("D").to_numpy()
+        day = pd.DatetimeIndex(day)
+    else:
+        day = ts.floor("D")
+    f = pd.Series(lg["usdc"].to_numpy(float), index=day).groupby(level=0).sum()
+    f = f[f.index.isin(days)]
+    out.loc[f.index, "flow"] = f.values
+    return out
+
+
 def window_metrics(daily: pd.DataFrame, equity: pd.Series, trips_legacy: pd.DataFrame, days: int | None,
-                   now: pd.Timestamp | None = None) -> dict:
-    """Leaderboard metrics for the last `days` (None = all history)."""
+                   now: pd.Timestamp | None = None, flows: pd.DataFrame | None = None) -> dict:
+    """Leaderboard metrics for the last `days` (None = all history). `flows`
+    (from daily_flows) makes returns transfer-adjusted; None = no ledger data."""
     from ..indicators import trades as tr
     now = (now or pd.Timestamp.now(tz="UTC")).normalize()
     start = now - pd.Timedelta(days=days - 1) if days else daily.index.min() if not daily.empty else now
@@ -121,7 +168,18 @@ def window_metrics(daily: pd.DataFrame, equity: pd.Series, trips_legacy: pd.Data
     if len(d):   # no observation the day before: start-of-day equity = end of day - that day's P&L
         eq_prev = eq_prev.fillna(equity.reindex(d.index) - pnl)
     r = (pnl / eq_prev.where(eq_prev > 0)).replace([np.inf, -np.inf], np.nan)
-    r = r[r.abs() < 5]                                  # a day's return beyond +/-500% means equity is unreliable
+    out["transfer_adjusted"] = flows is not None
+    if flows is not None and len(d):
+        fl = flows.reindex(equity.index)
+        e0 = equity.shift(1)
+        both = fl["fresh"].fillna(False).astype(bool) & fl["fresh"].shift(1, fill_value=False).astype(bool)
+        r_eq = ((equity - e0 - fl["flow"].fillna(0.0)) / e0.where(e0 > 0)).reindex(d.index)
+        r = r_eq.where(both.reindex(d.index, fill_value=False), r).replace([np.inf, -np.inf], np.nan)
+        out["transfers"] = float(fl["flow"].reindex(d.index).fillna(0.0).sum())
+        out["transfer_days"] = int((fl["flow"].reindex(d.index).fillna(0.0) != 0).sum())
+    dropped = r.notna() & (r.abs() >= 5)                # a day's return beyond +/-500% means equity is unreliable
+    out["return_days_dropped"] = int(dropped.sum())
+    r = r[~dropped]
     out["return_days"] = int(r.notna().sum())
     out["roe"] = float(np.prod(1 + r.dropna()) - 1) if r.notna().any() else np.nan
     if r.notna().sum() >= 2 and r.std() > 0:

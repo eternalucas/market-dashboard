@@ -18,6 +18,12 @@ Jobs and cadence (UTC):
   lightning      once a day    Lightning averages and fee medians -> observations ln:*
   sources        every hour    daily data sources that are due (src/sources/registry.py),
                                plus the BGeometrics call queue
+  pipeline       every hour    the steps of "Update all data" that are due (pipeline.steps:
+                               prices and event prices daily, FRED event data daily,
+                               funding/OI history hourly, Hyperliquid cohorts hourly,
+                               trade review and watched wallets daily)
+  flows          every hour    Coinalyze 1h flow bars for every asset (38 calls/min pacer)
+  positioning    every hour    live perps / book / options snapshot for every asset
   housekeeping   once a day    drop minute-level Flows heatmap rows older than 7 days
 
 Every write is an upsert on the table's primary key, so a repeated or
@@ -27,10 +33,12 @@ are logged at most once an hour per job so the log stays readable.
 from __future__ import annotations
 
 import fcntl
+import os
 import threading
 import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -41,7 +49,7 @@ from .indicators import orderbook as ob
 ASSET = "BTC"
 HEATMAP_STEP = {"BTC": 50.0}       # USD per bucket on the fixed price grid
 HEATMAP_RANGE_PCT = 5.0
-LOCK_PATH = storage.DB_PATH.parent / "recorder.lock"
+LOCK_PATH = Path(os.environ.get("RECORDER_LOCK", storage.DB_PATH.parent / "recorder.lock"))  # override for tests
 
 
 def _now() -> pd.Timestamp:
@@ -208,6 +216,46 @@ class Recorder:
         self._src_thread = threading.Thread(target=run, daemon=True, name="sources")
         self._src_thread.start()
 
+    def _bg(self, name: str, work) -> None:
+        """Run work(con, cfg) in its own thread and connection, once at a
+        time per job (a slow run is never started twice). A crash is logged
+        as rec:<name>."""
+        th = getattr(self, "_bg_threads", {}).get(name)
+        if th and th.is_alive():
+            return
+
+        def run():
+            from .config import load_config
+            c = storage.connect()
+            try:
+                work(c, load_config())
+            except Exception as e:  # noqa: BLE001
+                try:
+                    storage.log_fetch(c, f"rec:{name}", False, 0, f"{type(e).__name__}: {e}")
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+            finally:
+                c.close()
+        self._bg_threads = getattr(self, "_bg_threads", {})
+        self._bg_threads[name] = threading.Thread(target=run, daemon=True, name=name)
+        self._bg_threads[name].start()
+
+    def job_pipeline(self) -> None:
+        """Hourly: the due steps of "Update all data" (each keeps its own
+        freshness window, so daily ones run once a day)."""
+        from . import pipeline
+        self._bg("pipeline", lambda c, cfg: pipeline.run_steps(c, cfg, say=lambda *_: None))
+
+    def job_flows(self) -> None:
+        """Hourly: Coinalyze 1h flow bars for every asset (rate-limited, so own thread)."""
+        from . import pipeline
+        self._bg("flows", pipeline.update_flows)
+
+    def job_positioning(self) -> None:
+        """Hourly: live positioning snapshot for every asset, not only the one open in the dashboard."""
+        from . import pipeline
+        self._bg("positioning", lambda c, cfg: pipeline.positioning_all(c, cfg, say=lambda *_: None))
+
     def job_watched_wallets(self) -> None:
         """Hourly: balances and every new transaction of the watched Bitcoin
         wallets (own thread and connection; ~100 wallets take a few minutes)."""
@@ -225,31 +273,6 @@ class Recorder:
                 c.close()
         self._ww_thread = threading.Thread(target=run, daemon=True, name="watched_wallets")
         self._ww_thread.start()
-
-    def job_tokenized_stocks(self) -> None:
-        """Daily (checked hourly): tokenized-equity DEX volume by issuer, in its own
-        thread. The first run reads ~6 months of history for every pool (about an
-        hour at GeckoTerminal's free rate limit)."""
-        if getattr(self, "_ts_thread", None) and self._ts_thread.is_alive():
-            return
-        c0 = storage.connect()
-        last = storage.last_success(c0, "src:tokenized_stocks")
-        c0.close()
-        if last is not None and _now() - (last.tz_localize("UTC") if last.tzinfo is None else last) < pd.Timedelta(hours=20):
-            return
-
-        def run():
-            from .sources import tokenized_stocks
-            c = storage.connect()
-            try:
-                n = tokenized_stocks.update(c, say=lambda *_: None)
-                storage.log_fetch(c, "src:tokenized_stocks", True, n)
-            except Exception as e:  # noqa: BLE001
-                storage.log_fetch(c, "src:tokenized_stocks", False, 0, f"{type(e).__name__}: {e}")
-            finally:
-                c.close()
-        self._ts_thread = threading.Thread(target=run, daemon=True, name="tokenized_stocks")
-        self._ts_thread.start()
 
     def job_hl_liq_scan(self) -> None:
         """Every 15 minutes: read Hyperliquid accounts' positions (exact liquidation
@@ -319,7 +342,7 @@ class Recorder:
         self._cal_thread = threading.Thread(target=run, daemon=True, name="liq_calibrate")
         self._cal_thread.start()
 
-    TRADE_VENUES = ("hyperliquid", "lighter", "gmx")
+    TRADE_VENUES = ("hyperliquid",)
 
     def job_trade_leaderboard(self) -> None:
         """Hourly: sync each venue's Top 100 candidates that are due (each
@@ -353,20 +376,6 @@ class Recorder:
             threads[venue].start()
         self._tl_threads = threads
 
-    def job_lighter_sample(self) -> None:
-        """Every 15 minutes: accounts in the latest trades of Lighter's most
-        traded markets (Lighter has no public P&L leaderboard)."""
-        from .review import leaderboard as lbm
-        from .review import store as rstore
-        c = rstore.connect()
-        try:
-            n = lbm.sample_accounts(c, "lighter", 25)
-            storage.log_fetch(self.con, "rec:lighter_sample", True, n, f"{n} accounts in the latest trades")
-        except Exception as e:  # noqa: BLE001
-            self.fail("rec:lighter_sample", e)
-        finally:
-            c.close()
-
     def job_option_metrics_catchup(self) -> None:
         from .metrics import options as om
         for venue in ("deribit", "ibit"):
@@ -384,11 +393,17 @@ class Recorder:
     # ------------------------------------------------------------------ #
     JOBS = [  # (name, every N seconds). Jobs that only start their own thread come first, so after a
         # restart they start at once instead of waiting for the slower jobs below.
-        ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("lighter_sample", 900), ("watched_wallets", 3600),
-        ("tokenized_stocks", 3600), ("sources", 3600), ("liq_calibrate", 86400),
+        ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("watched_wallets", 3600),
+        ("sources", 3600), ("pipeline", 3600), ("flows", 3600), ("positioning", 3600), ("liq_calibrate", 86400),
         ("books", 60), ("futures_curve", 900), ("option_trades", 300), ("option_trades_backfill", 3600), ("option_chain", 3600),
         ("mempool", 600), ("ibit_chain", 900), ("lightning", 86400), ("option_metrics_catchup", 3600), ("housekeeping", 86400),
     ]
+
+    # Which job runs each part of pipeline.run_all ("Update all data"), so no
+    # series depends on the button (checked by tests/test_audit_fixes_F4.py).
+    PIPELINE_JOBS = {"prices": "pipeline", "positioning_history": "pipeline", "events": "pipeline",
+                     "trade_review": "pipeline", "onchain": "pipeline", "hl_cohorts": "pipeline",
+                     "flows": "flows", "sources": "sources", "positioning_snapshot": "positioning"}
 
     def run_due(self) -> None:
         for name, every in self.JOBS:

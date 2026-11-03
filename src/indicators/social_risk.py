@@ -141,13 +141,6 @@ def youtube_component(subs: dict[str, pd.Series], window_days: int, min_obs: int
     return mean_of(scored)
 
 
-def x_component(impressions: dict[str, pd.Series], window_days: int) -> pd.Series:
-    """Hand-logged X impressions. Entries are sparse, so 8 entries is enough
-    to start scoring, and a reading stays valid for 14 days."""
-    scored = [to_daily(rolling_percentile(s, window_days, min_obs=8), ffill_days=14) for s in impressions.values()]
-    return mean_of(scored)
-
-
 def wikipedia_share_component(views: dict[str, pd.Series], totals: dict[str, pd.Series],
                               window_days: int, min_obs: int) -> pd.Series:
     """Each article's share of all human views of its Wikipedia (7-day
@@ -232,8 +225,11 @@ def app_store_component_v2(overall: dict[str, pd.Series], finance: dict[str, pd.
     return mean_of(per_country)
 
 
+YOUTUBE_MIN_DAYS = 30     # no public archive of past views: history builds from the first recording
+
+
 def youtube_views_component(views: dict[str, pd.Series], subs: dict[str, pd.Series],
-                            window_days: int, min_obs: int = 90) -> pd.Series:
+                            window_days: int, min_obs: int = YOUTUBE_MIN_DAYS) -> pd.Series:
     """New views per day (7-day average) per channel, scored against its own
     history; 30-day subscriber growth counts one third. Lifetime views are
     exact, so day-to-day changes are real (subscriber counts are rounded)."""
@@ -288,6 +284,22 @@ def funding_component(funding: pd.Series, window_days: int, min_obs: int) -> pd.
     return to_daily(rolling_percentile(smooth, window_days, min_obs), ffill_days=3)
 
 
+def leverage_component(oi_usd: pd.Series, mcap: pd.Series, window_days: int, min_obs: int) -> pd.Series:
+    """Perpetual open interest (all exchanges Coinalyze covers, USD) / BTC
+    market cap, 7-day mean, scored against its own history: how much of the
+    market is held with borrowed money."""
+    ratio = (to_daily(oi_usd, 3) / to_daily(mcap, 3)).rolling(7, min_periods=5).mean()
+    return to_daily(rolling_percentile(ratio.dropna(), window_days, min_obs), ffill_days=3)
+
+
+def taker_buy_component(buy_usd: pd.Series, total_usd: pd.Series, window_days: int, min_obs: int) -> pd.Series:
+    """Share of perpetual volume that was aggressive (taker) buying, 7-day
+    sums, scored against its own history: traders paying the spread to get long."""
+    b, t = to_daily(buy_usd, 0).rolling(7, min_periods=5).sum(), to_daily(total_usd, 0).rolling(7, min_periods=5).sum()
+    share = (b / t.where(t > 0)).dropna()
+    return to_daily(rolling_percentile(share, window_days, min_obs), ffill_days=3)
+
+
 MEMECOINS = ("DOGE-USD", "SHIB-USD", "PEPE24478-USD")
 
 
@@ -314,14 +326,14 @@ COMPONENTS = {   # key: (label, group, weight)
     "app_store": ("App Store ranks (US, CA, UK)", "attention", 1.00),
     "youtube": ("YouTube views per day", "attention", 0.75),
     "hacker_news": ("Hacker News mentions", "attention", 0.50),
-    "news": ("News coverage (GDELT)", "attention", 0.50),
-    "x_impressions": ("X impressions (hand-logged)", "attention", 0.50),
     # Half weight: half of Fear & Greed is price momentum and volatility, which
     # trend-follow, and its social part overlaps the attention group.
     "fear_greed": ("Fear & Greed Index", "speculation", 0.50),
     "funding": ("Perp funding rate", "speculation", 1.00),
     "altseason": ("Altcoin Season Index", "speculation", 0.75),
     "memecoins": ("Memecoin volume share", "speculation", 0.75),
+    "leverage": ("Perp leverage (open interest / market cap)", "speculation", 0.75),
+    "taker_buys": ("Perp taker buy share", "speculation", 0.50),
 }
 GROUP_WEIGHTS = {"attention": 0.65, "speculation": 0.35}
 MIN_COMPONENTS = 3
@@ -332,7 +344,9 @@ def grouped_composite(components: dict[str, pd.Series], weights: dict[str, float
     """Weighted mean within each group, then across groups.
 
     Returns one column per component, 'attention', 'speculation', 'score'
-    and 'n_components'. Days with fewer than MIN_COMPONENTS have no score."""
+    and 'n_components'. Days with fewer than MIN_COMPONENTS have no score, and
+    neither do days where a group that has inputs has none live that day: its
+    weight is not silently moved onto the other group."""
     weights = {k: v[2] for k, v in COMPONENTS.items()} | (weights or {})
     group_weights = GROUP_WEIGHTS | (group_weights or {})
     available = {k: v for k, v in components.items() if v is not None and not v.dropna().empty}
@@ -353,6 +367,7 @@ def grouped_composite(components: dict[str, pd.Series], weights: dict[str, float
     gw = pd.Series(group_weights)
     have = gdf.notna()
     score = (gdf.fillna(0) * gw).sum(axis=1) / (have * gw).sum(axis=1).replace(0, np.nan)
+    score = score.where(have[list(groups)].all(axis=1))
     n = df.notna().sum(axis=1)
     out = df.copy()
     out["attention"], out["speculation"] = gdf["attention"], gdf["speculation"]

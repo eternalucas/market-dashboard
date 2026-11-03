@@ -2,15 +2,12 @@
 (trimmed). Each adapter is checked for schema, timestamps (UTC days, no
 duplicates), and plausible ranges; BGeometrics also for its call budget."""
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 FIX = Path(__file__).parent / "fixtures"
-os.environ.setdefault("MARKET_DB", str(Path(tempfile.mkdtemp()) / "t.db"))
 
 from src import storage  # noqa: E402
 from src.sources import (alternative_me, base, bgeometrics, blockchain_com, cftc, coinmetrics,  # noqa: E402
