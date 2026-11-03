@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from .localtime import fmt_col
-from . import views
+from . import ui_pipeline, views
 
 BADGE = {"OK": "🟢 OK", "Stale": "🟠 Stale", "Failing": "🔴 Failing"}
 
@@ -82,6 +82,8 @@ def render(con, recorder_state: str) -> None:
         st.caption("Nothing fetched yet.")
         return
     _cards(h, recorder_state)
+    ui_pipeline.render(h, lambda df: _table(df, ["Status", "Group", "Source", "Expected", "Updated", "Last success",
+                                                 "Last error"]))
 
     bad = h[h["Status"] != "OK"]
     st.markdown("##### Needs attention")
