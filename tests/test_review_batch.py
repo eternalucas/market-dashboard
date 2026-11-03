@@ -55,3 +55,6 @@ def test_persistence_ranks_on_the_first_window_and_measures_the_second(tmp_path,
     assert p["status"] == "done" and p["pool"] == 40 and p["top_n"] == 10
     assert p["top_profitable_next"] == 0.0 and p["rest_profitable_next"] == pytest.approx(20 / 30)
     assert p["rank_corr"] < 0
+    # a pool no bigger than top_n (the real Top 100 case) compares top half with bottom half instead of crashing
+    p = batch.persistence(con, now=now, top_n=100)
+    assert p["top_n"] == 20 and p["rest_profitable_next"] == 1.0 and p["top_stayed_top"] == 0.0

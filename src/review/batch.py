@@ -234,6 +234,7 @@ def persistence(con, venue: str = "hyperliquid", el=None, window_days: int = 30,
     df = pd.DataFrame(rows)
     if len(df) < 20:
         return {"status": "too_few", "accounts": len(df)}
+    top_n = min(top_n, len(df) // 2)                       # small pool: top half vs bottom half, never an empty 'rest'
     df["prev_rank"] = df["prev"].rank(ascending=False, method="first")
     df["next_rank"] = df["next"].rank(ascending=False, method="first")
     top = df[df["prev_rank"] <= top_n]
@@ -241,9 +242,9 @@ def persistence(con, venue: str = "hyperliquid", el=None, window_days: int = 30,
     return {"status": "done", "pool": int(len(df)), "top_n": int(len(top)),
             "first_window": [start.isoformat(), mid.isoformat()], "second_window": [mid.isoformat(), now.isoformat()],
             "top_profitable_next": float((top["next"] > 0).mean()),
-            "rest_profitable_next": float((rest["next"] > 0).mean()) if len(rest) else None,
+            "rest_profitable_next": float((rest["next"] > 0).mean()),
             "top_median_next": float(top["next"].median()),
-            "rest_median_next": float(rest["next"].median()) if len(rest) else None,
+            "rest_median_next": float(rest["next"].median()),
             "top_stayed_top": float((top["next_rank"] <= top_n).mean()),
             "rank_corr": float(df["prev"].rank().corr(df["next"].rank())),
             "bias": "The pool is today's Hyperliquid candidate list (traders near the top of its leaderboard now), "

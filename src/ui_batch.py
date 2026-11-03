@@ -73,7 +73,15 @@ def render(rcon, el) -> None:
         if not running:
             st.info("Not run yet. Click **Run on the Top 100**.")
         return
-    _results(done["result"])
+    r = dict(done["result"])
+    pers = r.get("persistence") or {}
+    if pers.get("status") == "done" and pers.get("rest_profitable_next") is None:
+        # saved by a run before 3 Nov 2026, when a pool of <= 100 left the comparison group empty: recompute once
+        key = f"bt-persist-{done.get('finished', '')}"
+        if key not in st.session_state:
+            st.session_state[key] = batch.persistence(rcon, venue, el)
+        r["persistence"] = st.session_state[key]
+    _results(r)
 
 
 @st.fragment(run_every=5)
