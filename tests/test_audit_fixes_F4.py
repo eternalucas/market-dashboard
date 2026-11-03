@@ -52,7 +52,7 @@ def test_recorder_jobs_really_run_every_step(tmp_path, monkeypatch):
     real = storage.connect
     monkeypatch.setattr(storage, "connect", lambda *a, **k: real(tmp_path / "m.db"))
     r = recorder.Recorder()
-    for job in ("pipeline", "flows", "positioning"):
+    for job in ("pipeline", "onchain", "flows", "positioning"):
         getattr(r, f"job_{job}")()
         r._bg_threads[job].join(10)
     assert set(called) == {k for k, *_ in pipeline.steps(CFG)} | {"flows", "pos:BTC", "pos:ETH"}

@@ -537,7 +537,7 @@ def steps(cfg: dict) -> list[tuple[str, str, Callable, str, pd.Timedelta]]:
     return [
         ("prices", "Prices", update_prices, f"price:{cfg['assets'][0]}", DAILY),
         # Social Risk inputs (Wikipedia, Trends, App Store, YouTube, Hacker News,
-        # GDELT) update through the source registry (sources/social.py).
+        # ) update through the source registry (sources/social.py).
         ("positioning_history", "Funding and OI history", update_positioning_history,
          f"funding_hist:{cfg['positioning']['perp_exchanges'][0]}:{cfg['assets'][0]}", HOURLY),
         ("events", "Macro event calendar and prices", update_events, "central_bank_calendar", DAILY),
@@ -547,12 +547,16 @@ def steps(cfg: dict) -> list[tuple[str, str, Callable, str, pd.Timedelta]]:
     ]
 
 
-def run_steps(con, cfg: dict, full: bool = False, say=print) -> list[str]:
-    """Run every step of steps(cfg) that is due (all of them when `full`).
-    Returns the labels skipped as fresh. A step that raises is logged and
-    never stops the next one."""
+def run_steps(con, cfg: dict, full: bool = False, say=print, only: set[str] | None = None,
+              skip: set[str] | None = None) -> list[str]:
+    """Run every step of steps(cfg) that is due (all of them when `full`),
+    optionally only the keys in `only` / without those in `skip`. Returns the
+    labels skipped as fresh. A step that raises is logged and never stops the
+    next one."""
     skipped = []
     for key, label, fn, source, max_age in steps(cfg):
+        if (only is not None and key not in only) or (skip and key in skip):
+            continue
         if not full and source and is_fresh(con, source, max_age):
             skipped.append(label)
             continue

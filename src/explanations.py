@@ -555,30 +555,6 @@ add("difficulty_regression",
     "Difficulty reflects what it costs to mine, so the model price acts as an estimate of mining's 'fair value'. Price below it has marked deep value; far above it, euphoria.")
 
 # =========================================================================== Lightning / mempool
-add("ln_capacity",
-    "Total BTC locked in public Lightning Network channels (mempool.space).",
-    "Lightning is bitcoin's payments layer. Capacity growth shows how much BTC people commit to it.")
-add("ln_nodes",
-    "The number of public Lightning nodes (Tor, clearnet, both, and unannounced).",
-    "The breadth of the network. Many private channels aren't visible, so this understates true usage.")
-add("ln_channels",
-    "The number of public Lightning payment channels.",
-    "Channel counts falling while capacity rises means the network is consolidating around larger, better-connected nodes.")
-add("ln_channel_size",
-    "Average channel size: capacity / channels, in BTC.",
-    "Bigger channels support larger payments and point to professional routing nodes.")
-add("ln_node_capacity",
-    "Average capacity per node: capacity / nodes, in BTC.",
-    "How much liquidity a typical node commits.")
-add("ln_channels_change",
-    "The day-over-day change in public channel count (opens minus closes, net).",
-    "Net closures often come when on-chain fees fall (cheap to close) or when nodes consolidate.")
-add("ln_nodes_change",
-    "The day-over-day change in public node count.",
-    "Day-to-day changes are noisy; watch the trend.")
-add("ln_fees",
-    "The median channel fee rate (parts per million of the payment) and the median base fee (millisatoshis per payment), recorded daily.",
-    "The cost of routing payments over Lightning. It stays tiny compared with on-chain fees.")
 add("mempool_count",
     "The number of unconfirmed transactions waiting in the mempool, recorded every 10 minutes (mempool.space).",
     "A growing backlog means demand for block space exceeds supply and fees rise.")
@@ -820,9 +796,6 @@ add("social_youtube",
 add("social_hn",
     "Weekly stories and comments mentioning bitcoin, ethereum or cryptocurrency (an item mentioning two terms counts twice). Log scale.",
     "Comments react faster than stories. Peaks line up with the 2013, 2017 and 2021 tops; the long decline since 2022 is the site's audience moving to AI, which is why the input scores each week against the last two years only.")
-add("social_news",
-    "Daily articles mentioning bitcoin, cryptocurrency or crypto / all articles GDELT monitored, 7-day sums, x 100.",
-    "How much of the world's news is about crypto.")
 add("social_memes",
     "DOGE + SHIB + PEPE volume / the top-50 altcoin volume on Yahoo Finance, 7-day sums, x 100.",
     "Spikes coincide with memecoin manias (DOGE in early 2021, PEPE in 2023, the 2024 memecoin run).")

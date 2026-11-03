@@ -20,9 +20,13 @@ div[class*="st-key-chart-reset-"] { height: 0; min-height: 0; margin: 0; padding
 div[class*="st-key-chart-reset-"] { display: flex !important; flex-direction: row !important; justify-content: flex-end !important;
     overflow: visible; width: 100% !important; }
 div[class*="st-key-chart-reset-"] > div { width: auto !important; margin-top: -0.2rem; }
-div[class*="st-key-chart-reset-"] button { min-height: 0; height: 1.2rem; padding: 0 0.15rem; line-height: 1;
-    font-size: 0.95rem; color: #5f5f5f; background: transparent; border: 0; }
-div[class*="st-key-chart-reset-"] button:hover { color: #f7931a; }
+/* Same look on every chart: white, slightly larger. The inner text elements are
+   set too, because some sections style paragraphs inside panels differently. */
+div[class*="st-key-chart-reset-"] button { min-height: 0 !important; height: 1.4rem !important; padding: 0 0.15rem !important;
+    line-height: 1 !important; background: transparent !important; border: 0 !important; }
+div[class*="st-key-chart-reset-"] button, div[class*="st-key-chart-reset-"] button * {
+    font-size: 1.15rem !important; color: #f7f8fa !important; opacity: 1 !important; line-height: 1 !important; }
+div[class*="st-key-chart-reset-"] button:hover, div[class*="st-key-chart-reset-"] button:hover * { color: #f7931a !important; }
 .gn-meta, [data-testid="stCaptionContainer"] { padding-right: 1.4rem; }
 </style>
 """

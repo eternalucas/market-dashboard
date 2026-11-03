@@ -89,16 +89,16 @@ def test_source_health_statuses():
     con = _log_db([
         ("2026-11-02T17:00:00+00:00", "src:cftc", 1, 10, ""),                      # fresh
         ("2026-10-26T17:00:00+00:00", "price:BTC", 1, 5, ""),                      # stale: not run for a week
-        ("2026-11-01T10:00:00+00:00", "gdelt", 1, 3, ""),
-        ("2026-11-02T17:30:00+00:00", "gdelt", 0, 0, "HTTPError: 429"),           # failing now, worked before
+        ("2026-11-01T10:00:00+00:00", "src:farside", 1, 3, ""),
+        ("2026-11-02T17:30:00+00:00", "src:farside", 0, 0, "HTTPError: 429"),           # failing now, worked before
         ("2026-10-27T22:55:00+00:00", "src:tokenized_stocks", 0, 0, "x"),          # retired: hidden
     ])
     h = views.source_health(con, now=now).set_index("Source")
     assert h.loc["src:cftc", "Status"] == "OK"
     assert h.loc["price:BTC", "Status"] == "Stale"
-    assert h.loc["gdelt", "Status"] == "Failing"
-    assert h.loc["gdelt", "Last success"] == pd.Timestamp("2026-11-01T10:00:00Z")
-    assert h.loc["gdelt", "Last error"] == "HTTPError: 429"
+    assert h.loc["src:farside", "Status"] == "Failing"
+    assert h.loc["src:farside", "Last success"] == pd.Timestamp("2026-11-01T10:00:00Z")
+    assert h.loc["src:farside", "Last error"] == "HTTPError: 429"
     assert "src:tokenized_stocks" not in h.index
     assert list(h["Status"]) == ["Failing", "Stale", "OK"]
 

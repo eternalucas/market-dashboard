@@ -155,7 +155,19 @@ def component_status(df: pd.DataFrame, raw: dict, cfg) -> pd.DataFrame:
 
 # Sources that were removed from the dashboard: their old log rows are not shown.
 RETIRED_SOURCES = {"src:tokenized_stocks", "rec:trade_leaderboard:lighter", "rec:trade_leaderboard:gmx",
-                   "rec:lighter_sample"}
+                   "rec:lighter_sample",
+                   # renamed: now wikipedia:<project>:<article> and app_store:<country>:<chart>
+                   "wikipedia:Bitcoin", "wikipedia:Cryptocurrency", "wikipedia:Dogecoin", "wikipedia:Ethereum",
+                   "app_store:finance", "app_store:overall",
+                   "fred_release:FOMC decision",              # FOMC dates come from the Fed's calendar now
+                   "bgeo:delta-cap",                          # computed from Coin Metrics instead
+                   "gdelt", "social:partial",                 # GDELT stopped publishing (27 Oct 2026)
+                   "rec:lightning", "mempool_hist:lightning",  # Lightning retired (3 Nov 2026)
+                   "onchain:btc:967"}                          # wallet relabelled "Whale (12ib7d…)"
+# Fetched only when a page asks for them (Flows bar sizes other than the hourly
+# one the recorder keeps): healthy unless the last fetch failed.
+ON_DEMAND = ("coinalyze:1min", "coinalyze:5min", "coinalyze:15min", "coinalyze:30min", "coinalyze:4hour",
+             "coinalyze:daily")
 STALE_AFTER = pd.Timedelta(hours=48)     # default: no successful fetch for this long = stale
 
 _H, _D = pd.Timedelta(hours=1), pd.Timedelta(days=1)
@@ -262,7 +274,7 @@ def source_health(con, now: pd.Timestamp | None = None) -> pd.DataFrame:
     failing = df["last_ok"] != 1
     too_old = df["last_success"].isna() | ((now - df["last_success"]) > limit)
     no_rows = df["source"].isin(empty_runs) & ~df["source"].str.startswith(ZERO_ROWS_OK)
-    stale = too_old | no_rows
+    stale = (too_old | no_rows) & ~df["source"].str.startswith(ON_DEMAND)
     note = np.where(no_rows, f"last {ZERO_ROWS_RUNS} runs stored 0 rows",
                     "no success for over " + limit.map(_span))
     out = pd.DataFrame({

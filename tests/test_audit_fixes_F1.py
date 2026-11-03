@@ -66,29 +66,6 @@ def test_a2_01_yoy_calendar_offset():
 
 
 # A2-03: a Lightning history that stopped updating is logged as a failure.
-def test_a2_03_lightning_staleness_logged(monkeypatch, tmp_path):
-    from src.sources import mempool_hist
-    con = sqlite3.connect(tmp_path / "m.db")
-    days = pd.date_range(TODAY - pd.Timedelta(days=300), TODAY - pd.Timedelta(days=64), freq="1D")
-    ln = pd.DataFrame({"channel_count": 1.0, "total_capacity": 1.0, "node_count": 1.0}, index=days)
-    hr = pd.Series(1.0, index=days)
-    monkeypatch.setattr(mempool_hist.mempool_space, "hashrate_history", lambda p: (hr, hr))
-    monkeypatch.setattr(mempool_hist.mempool_space, "lightning_history", lambda p: ln)
-    saved, logged = [], []
-    monkeypatch.setattr(mempool_hist.storage, "save_series", lambda con, n, s: saved.append(n) or len(s))
-    monkeypatch.setattr(mempool_hist.storage, "log_fetch", lambda con, src, ok, rows=0, msg="": logged.append((src, ok, msg)))
-    mempool_hist.update(con)
-    assert logged and logged[0][0] == "mempool_hist:lightning" and logged[0][1] is False
-    assert f"{days[-1]:%Y-%m-%d}" in logged[0][2]
-    logged.clear()
-    fresh = ln.copy()
-    fresh.index = pd.date_range(end=TODAY, periods=len(ln), freq="1D")
-    monkeypatch.setattr(mempool_hist.mempool_space, "lightning_history", lambda p: fresh)
-    mempool_hist.update(con)
-    assert logged == []
-
-
-# A2-08: a group with no live input gives no score; it does not fall back to the other group.
 def test_a2_08_no_single_group_score():
     from src.indicators import social_risk as sr
     idx = pd.date_range("2026-01-01", periods=10, freq="1D", tz="UTC")

@@ -9,14 +9,14 @@ It's a data tool, not a trading bot: it informs decisions, it doesn't make them.
 
 **At a glance**
 
-- 283 charts across 37 dashboards, each with an "About this chart" note on how the metric is built
+- 275 charts across 36 dashboards, each with an "About this chart" note on how the metric is built
 - 121 labelled wallets tracked (exchanges, market makers, Bitcoin wallets holding 10,000+ BTC)
-- 236 tests, run without the network against real captured API responses
+- 242 tests, run without the network against real captured API responses
 - Outputs checked against Glassnode's free reference values where available; every discrepancy and fix is logged in [`BUILD_LOG.md`](BUILD_LOG.md)
 
 ## Views
 
-- **Studio**: 37 dashboards in the style of Glassnode Studio (spot, futures,
+- **Studio**: 36 dashboards in the style of Glassnode Studio (spot, futures,
   options, ETFs, macro, on-chain, stablecoins and
   indicators), built only from free sources and excluding anything that needs
   a Bitcoin node. A search box finds any chart or dashboard by name.
@@ -89,8 +89,8 @@ network, and a broken source never breaks the rest of the dashboard.
 **Data providers**: Coin Metrics, BGeometrics, blockchain.com, mempool.space,
 Blockstream, Blockscout, DefiLlama, CoinGecko, alternative.me, Coinalyze,
 Coinbase, Binance, Bybit, OKX, Kraken, Hyperliquid, Deribit, CFTC, FRED,
-Yahoo Finance, Farside, Wikimedia, Google Trends, YouTube, the App Store,
-Hacker News and GDELT (news coverage, shown as its own chart).
+Yahoo Finance, Farside, Wikimedia, Google Trends, YouTube, the App Store and
+Hacker News.
 
 ## Social Risk method
 

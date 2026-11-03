@@ -80,9 +80,18 @@ def local(idx: pd.DatetimeIndex, tz: str) -> pd.DatetimeIndex:
     return idx.tz_convert(tz).tz_localize(None)
 
 
+ROW_GAP_PX = 22          # empty space between stacked panels, so each reads as its own chart
+PANEL_BG = "#161b29"     # panel fill, a shade lighter than the page so the gaps show
+
+
+def gap(height: int) -> float:
+    """make_subplots vertical_spacing (a fraction of the plot height) for ROW_GAP_PX pixels."""
+    return ROW_GAP_PX / max(height - 32, 1)
+
+
 def style(fig: go.Figure, height: int, bar_size: str, right_margin: int = 8) -> go.Figure:
     fig.update_layout(
-        height=height, template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
+        height=height, template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=PANEL_BG,
         font=dict(color=TEXT, size=11), margin=dict(l=8, r=right_margin, t=24, b=8),
         hovermode="x unified", showlegend=False, bargap=0.15, barmode="relative",
         xaxis_rangeslider_visible=False,
@@ -142,7 +151,7 @@ def orderflow_figure(fl: dict, tz: str, bar_size: str, usd: bool) -> go.Figure:
              ("OKX", perp, "OKX Perps", "perp"), ("Hyperliquid", perp, "HL Perps", "perp")]
     rows = [(src[ex], label, kind) for ex, src, label, kind in order if ex in src]
     n = 2 + len(rows)
-    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.012,
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, vertical_spacing=gap(330 + 70 * n),
                         row_heights=[3.2, 1.2] + [1.0] * len(rows))
     add_price(fig, fl, tz)
     b_col, s_col = ("buy_usd", "sell_usd") if usd else ("buy", "sell")
@@ -166,7 +175,7 @@ def orderflow_figure(fl: dict, tz: str, bar_size: str, usd: bool) -> go.Figure:
 
 def derivatives_figure(fl: dict, tz: str, bar_size: str, asset: str, oi_split: bool) -> go.Figure:
     """Price, liquidations, open interest, funding."""
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[1.6, 0.9, 1.2, 0.9])
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=gap(980), row_heights=[1.6, 0.9, 1.2, 0.9])
     add_price(fig, fl, tz)
     lq = fl["liquidations"]
     if not lq.empty:
@@ -197,7 +206,7 @@ def derivatives_figure(fl: dict, tz: str, bar_size: str, asset: str, oi_split: b
 
 def spot_figure(fl: dict, tz: str, bar_size: str, asset: str) -> go.Figure:
     """Price, CVD spot vs perps, spot CVD per exchange, Coinbase premium."""
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[1.6, 1.1, 1.1, 0.9])
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=gap(980), row_heights=[1.6, 1.1, 1.1, 0.9])
     add_price(fig, fl, tz)
     for s, name, color in ((fl["cvd_spot"], "CVD spot", LINE_A), (fl["cvd_perp"], "CVD perps", LINE_B)):
         if not s.empty:

@@ -15,7 +15,6 @@ Jobs and cadence (UTC):
   option_chain   every hour    full Deribit BTC option chain -> option_snap (venue deribit)
   mempool        every 10 min  mempool size, fees, fee-band split -> observations mempool:*
   ibit_chain     once a day    after the US close (20:30 UTC, weekdays) -> option_snap (venue ibit)
-  lightning      once a day    Lightning averages and fee medians -> observations ln:*
   sources        every hour    daily data sources that are due (src/sources/registry.py),
                                plus the BGeometrics call queue
   pipeline       every hour    the steps of "Update all data" that are due (pipeline.steps:
@@ -188,15 +187,6 @@ class Recorder:
         except Exception as e:  # noqa: BLE001
             self.fail(src, e)
 
-    def job_lightning(self) -> None:
-        src = "rec:lightning"
-        try:
-            today = _now().normalize()
-            n = sum(storage.save_point(self.con, f"ln:{k}", v, today) for k, v in mempool_space.lightning_latest().items())
-            self.ok(src, n)
-        except Exception as e:  # noqa: BLE001
-            self.fail(src, e)
-
     def job_sources(self) -> None:
         """Hourly: refresh the daily sources that are due (each has its own
         freshness window) and spend the BGeometrics call budget."""
@@ -244,7 +234,14 @@ class Recorder:
         """Hourly: the due steps of "Update all data" (each keeps its own
         freshness window, so daily ones run once a day)."""
         from . import pipeline
-        self._bg("pipeline", lambda c, cfg: pipeline.run_steps(c, cfg, say=lambda *_: None))
+        self._bg("pipeline", lambda c, cfg: pipeline.run_steps(c, cfg, say=lambda *_: None, skip=SLOW_STEPS))
+
+    def job_onchain(self) -> None:
+        """Hourly check (the step itself is daily): Ethereum and Bitcoin wallet
+        balances. Its own thread, so a slow explorer never holds up the other
+        pipeline steps."""
+        from . import pipeline
+        self._bg("onchain", lambda c, cfg: pipeline.run_steps(c, cfg, say=lambda *_: None, only=SLOW_STEPS))
 
     def job_flows(self) -> None:
         """Hourly: Coinalyze 1h flow bars for every asset (rate-limited, so own thread)."""
@@ -394,15 +391,15 @@ class Recorder:
     JOBS = [  # (name, every N seconds). Jobs that only start their own thread come first, so after a
         # restart they start at once instead of waiting for the slower jobs below.
         ("liq_feeds", 3600), ("hl_liq_scan", 900), ("trade_leaderboard", 3600), ("watched_wallets", 3600),
-        ("sources", 3600), ("pipeline", 3600), ("flows", 3600), ("positioning", 3600), ("liq_calibrate", 86400),
+        ("sources", 3600), ("pipeline", 3600), ("onchain", 3600), ("flows", 3600), ("positioning", 3600), ("liq_calibrate", 86400),
         ("books", 60), ("futures_curve", 900), ("option_trades", 300), ("option_trades_backfill", 3600), ("option_chain", 3600),
-        ("mempool", 600), ("ibit_chain", 900), ("lightning", 86400), ("option_metrics_catchup", 3600), ("housekeeping", 86400),
+        ("mempool", 600), ("ibit_chain", 900), ("option_metrics_catchup", 3600), ("housekeeping", 86400),
     ]
 
     # Which job runs each part of pipeline.run_all ("Update all data"), so no
     # series depends on the button (checked by tests/test_audit_fixes_F4.py).
     PIPELINE_JOBS = {"prices": "pipeline", "positioning_history": "pipeline", "events": "pipeline",
-                     "trade_review": "pipeline", "onchain": "pipeline", "hl_cohorts": "pipeline",
+                     "trade_review": "pipeline", "onchain": "onchain", "hl_cohorts": "pipeline",
                      "flows": "flows", "sources": "sources", "positioning_snapshot": "positioning"}
 
     def run_due(self) -> None:
@@ -445,6 +442,7 @@ def acquire_lock():
 
 
 FAST_JOBS = {"books"}
+SLOW_STEPS = {"onchain"}   # pipeline steps with their own recorder job
 
 
 def start_background() -> str:

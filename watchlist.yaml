@@ -316,8 +316,8 @@ wallets:
   source: bitinfocharts top-100 rich list
 - chain: btc
   address: 12ib7dApVFvg82TXKycWBNpN8kFyiAN1dr
-  entity: '967'
-  label: '967'
+  entity: Whale (12ib7d…)
+  label: Whale (12ib7d…)
   category: whale
   balance_at_listing: 31000
   source: bitinfocharts top-100 rich list

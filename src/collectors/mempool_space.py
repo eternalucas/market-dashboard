@@ -9,6 +9,8 @@ import pandas as pd
 from .http import get_json
 
 BASE = "https://mempool.space/api"
+# Other servers running the same mempool.space software (identical API), tried in order.
+MIRRORS = [BASE, "https://mempool.emzy.de/api"]
 
 # Fee-rate bands (sat/vB) used to split the mempool, low to high.
 FEE_BANDS = [0, 1, 2, 3, 5, 10, 20, 50, 100, 1e9]
@@ -18,11 +20,40 @@ def band_label(lo: float, hi: float) -> str:
     return f"{lo:g}+" if hi >= 1e9 else f"{lo:g}-{hi:g}"
 
 
+FALLBACK = "https://blockstream.info/api"
+# Blockstream's fee estimates (sat/vB to confirm within N blocks) mapped onto
+# mempool.space's recommended-fee names.
+FEE_TARGETS = {"fastestFee": "1", "halfHourFee": "3", "hourFee": "6", "economyFee": "144", "minimumFee": "1008"}
+
+
+def _mempool_and_fees() -> tuple[dict, dict]:
+    """(mempool summary, recommended fees) from the first mempool.space-software
+    server that answers, else from Blockstream's Esplora API (same /mempool format)."""
+    for base in MIRRORS:
+        try:
+            return get_json(f"{base}/mempool"), get_json(f"{base}/v1/fees/recommended")
+        except Exception:  # noqa: BLE001 - try the next server
+            continue
+    m = get_json(f"{FALLBACK}/mempool")       # Blockstream: same /mempool, its own fee estimates
+    est = get_json(f"{FALLBACK}/fee-estimates")
+    return m, {k: est[n] for k, n in FEE_TARGETS.items() if n in est}
+
+
+def _mirrored(path: str):
+    """GET path from the first mempool.space-software server that answers."""
+    last = None
+    for base in MIRRORS:
+        try:
+            return get_json(f"{base}{path}")
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise last
+
+
 def mempool_state() -> dict:
     """count, vsize (vB), total_fee (sats), recommended fees, and vsize and fees
     per fee-rate band (from the fee histogram of [fee rate, vsize] pairs)."""
-    m = get_json(f"{BASE}/mempool")
-    rec = get_json(f"{BASE}/v1/fees/recommended")
+    m, rec = _mempool_and_fees()
     out = {"count": float(m["count"]), "vsize": float(m["vsize"]), "total_fee": float(m["total_fee"])}
     out.update({f"rec_{k}": float(v) for k, v in rec.items()})
     hist = pd.DataFrame(m.get("fee_histogram") or [], columns=["rate", "vsize"])
@@ -42,7 +73,7 @@ def mempool_state() -> dict:
 
 def hashrate_history(period: str = "all") -> tuple[pd.Series, pd.Series]:
     """(daily average hash rate in H/s, difficulty at each adjustment)."""
-    d = get_json(f"{BASE}/v1/mining/hashrate/{period}")
+    d = _mirrored(f"/v1/mining/hashrate/{period}")
     hr = pd.Series({pd.to_datetime(x["timestamp"], unit="s", utc=True): float(x["avgHashrate"]) for x in d["hashrates"]})
     diff = pd.Series({pd.to_datetime(x["time"], unit="s", utc=True): float(x["difficulty"]) for x in d["difficulty"]})
     return hr.sort_index(), diff.sort_index()

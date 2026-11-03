@@ -6,6 +6,8 @@ Start it with the "Start Dashboard" launcher, or: streamlit run app.py
 from __future__ import annotations
 
 
+import time
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -114,11 +116,29 @@ with st.sidebar:
                        help="Normally, sources that already updated recently are skipped (daily ones for 20 "
                             "hours, hourly ones for 55 minutes), so a repeat update takes about a minute. "
                             "Tick this to re-fetch everything (10+ minutes).")
-    if st.button("Update all data", type="primary", width="stretch"):
-        with st.status("Updating data...", expanded=True) as status:
-            pipeline.run_all(cfg, include_trends=include_trends, progress=status.write, full=full)
-            status.update(label="Update finished", state="complete")
-        st.cache_data.clear()
+    from src import bg_update
+    if st.button("Update all data", type="primary", width="stretch", disabled=bg_update.running(),
+                 help="Runs in the background: keep using the dashboard while it updates."):
+        bg_update.start(pipeline.run_all, cfg=cfg, include_trends=include_trends, full=full)
+
+    @st.fragment(run_every="3s")
+    def _update_progress():
+        s = bg_update.status()
+        if s["running"]:
+            mins = (time.time() - s["started"]) / 60
+            st.info(f"Updating in the background ({mins:.0f} min so far). The dashboard stays usable; "
+                    "charts refresh when it finishes.")
+            for m in s["messages"][-4:]:
+                st.caption(m)
+        elif bg_update.take_finished():
+            st.cache_data.clear()
+            st.rerun()          # whole page: charts pick up the new data
+        elif s["finished"]:
+            if s["error"]:
+                st.error(f"Update stopped: {s['error']}")
+            else:
+                st.success(f"Update finished at {time.strftime('%H:%M', time.localtime(s['finished']))}.")
+    _update_progress()
     log = storage.fetch_log(con, limit=1)
     if not log.empty:
         st.caption(f"Last fetch: {pd.to_datetime(log['ts'].iloc[0]).strftime('%Y-%m-%d %H:%M UTC')}")

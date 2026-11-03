@@ -40,7 +40,7 @@ PRIORITY = [
     "supply-profit", "supply-loss", "realized-profit", "realized-loss", "nrpl-usd", "etf-flow-btc",
     "etf-btc-total", "bitcoin-dominance", "realized_profit_lth", "realized_loss_lth", "realized_profit_sth",
     "realized_loss_sth", "cdd", "supply-adjusted-cdd", "cdd-90dma", "vdd-multiple", "asol", "aviv",
-    "true-market-mean", "delta-cap", "investor-price", "thermo-cap", "utxos-in-profit-pct",
+    "true-market-mean", "investor-price", "thermo-cap", "utxos-in-profit-pct",
     "coins-addr-1-BTC", "coins-addr-10-1-BTC", "coins-addr-100-10-BTC", "coins-addr-1K-100-BTC",
     "coins-addr-10K-1K-BTC", "coins-addr-10K-BTC", "balance-addr-1-BTC", "balance-addr-10-1-BTC",
     "balance-addr-100-10-BTC", "balance-addr-1K-100-BTC", "balance-addr-10K-1K-BTC", "balance-addr-10K-BTC",

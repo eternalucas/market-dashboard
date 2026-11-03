@@ -356,8 +356,7 @@ def _update(con, cfg) -> int:
     rows += update_wikipedia(con, cfg)
     rows += update_app_store(con, cfg)
     rows += update_youtube(con, cfg)
-    if _due(con, "gdelt", 20 * pd.Timedelta(hours=1)):
-        rows += _log(con, "gdelt", lambda: update_gdelt(con, cfg))
+    # GDELT retired 3 Nov 2026: it stopped publishing on 27 Oct 2026.
     rows += _log(con, "hacker_news", lambda: update_hacker_news(con, cfg))
     if (cfg or {}).get("_include_trends", True):
         rows += update_google_trends(con, cfg)

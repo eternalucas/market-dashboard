@@ -329,9 +329,13 @@ def cost_basis_models(c: Ctx) -> pd.DataFrame:
     AVIV ratio."""
     out = {"true_market_mean": _bg(c, "true-market-mean"), "investor_price": _bg(c, "investor-price"),
            "thermo_price": _bg(c, "thermo-price"), "terminal_price": _bg(c, "terminal-price"), "aviv": _bg(c, "aviv")}
-    dc = _bg(c, "delta-cap")
-    if not dc.empty:
-        out["delta_price"] = dc / c.supply()
+    # Delta cap = realized cap - average cap (average cap: the all-time mean
+    # of daily market cap), computed from Coin Metrics: BGeometrics'
+    # delta-cap endpoint has only ever answered HTTP 500.
+    mc, rc = c.mcap().dropna(), c.realized_cap()
+    if not mc.empty and not rc.empty:
+        avg_cap = mc.expanding().mean()
+        out["delta_price"] = ((rc - avg_cap) / c.supply()).dropna()
     return pd.DataFrame(out)
 
 

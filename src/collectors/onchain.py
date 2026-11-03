@@ -9,6 +9,8 @@ supply balances and transactions.
 """
 from __future__ import annotations
 
+import itertools
+
 import time
 from pathlib import Path
 
@@ -19,9 +21,14 @@ from ..addresses import valid
 from .http import get_json
 
 ROOT = Path(__file__).resolve().parents[2]
-BTC_APIS = ["https://mempool.space/api", "https://blockstream.info/api"]
+# Esplora-compatible explorers (same API and response format). Calls rotate
+# across them so no single one takes the whole load; an unreachable or
+# rate-limiting one is skipped (src/collectors/http.py) and the next is tried.
+BTC_APIS = ["https://mempool.space/api", "https://mempool.emzy.de/api", "https://blockstream.info/api"]
+_rr = itertools.count()
 BLOCKSCOUT = "https://eth.blockscout.com/api/v2"
 PAUSE = 0.25  # seconds between calls: polite pacing for free public APIs
+FALLBACK_PAUSE = 1.0   # extra wait before each call to the backup explorer
 
 
 def load_watchlist(path: Path = ROOT / "watchlist.yaml") -> pd.DataFrame:
@@ -38,8 +45,12 @@ def load_watchlist(path: Path = ROOT / "watchlist.yaml") -> pd.DataFrame:
 
 def _btc_get(path: str):
     last = None
-    for base in BTC_APIS:
+    start = next(_rr) % len(BTC_APIS)
+    for i in range(len(BTC_APIS)):
+        base = BTC_APIS[(start + i) % len(BTC_APIS)]
         try:
+            if i:                        # a retry on another explorer: go a little slower
+                time.sleep(FALLBACK_PAUSE)
             return get_json(f"{base}{path}")
         except Exception as e:  # noqa: BLE001 - try the fallback explorer
             last = e
