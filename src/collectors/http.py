@@ -20,6 +20,7 @@ _session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"}
 
 
 RETRY_STATUS = (429, 503)   # rate limited / temporarily unavailable: wait and try again
+SERVER_ERRORS = (500, 502, 504)   # transient server-side errors (e.g. Blockscout): retried, host not rested
 RETRIES = 3
 MAX_WAIT = 20.0             # seconds per wait, so one call never blocks for more than about a minute
 
@@ -79,7 +80,7 @@ def _connect_ok(host: str) -> None:
 
 
 def get_json(url: str, params: dict | None = None):
-    """GET and decode JSON. 429/503 answers and read timeouts are retried up
+    """GET and decode JSON. 429/503 and 500/502/504 answers and read timeouts are retried up
     to RETRIES times with bounded exponential backoff (honouring
     Retry-After). A host that can't be connected to is not retried: after
     DOWN_AFTER such failures in a row it is skipped for DOWN_FOR seconds, so
@@ -98,7 +99,7 @@ def get_json(url: str, params: dict | None = None):
             time.sleep(_wait(attempt))
             continue
         _connect_ok(host)
-        if r.status_code in RETRY_STATUS and attempt < RETRIES:
+        if r.status_code in RETRY_STATUS + SERVER_ERRORS and attempt < RETRIES:
             time.sleep(_wait(attempt, r))
             continue
         if r.status_code in RETRY_STATUS:          # still refusing after every retry: rest this host

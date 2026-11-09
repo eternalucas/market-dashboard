@@ -165,3 +165,15 @@ def test_times_are_shown_in_montreal_time():
     assert fmt(pd.Timestamp("2026-07-01 12:00")) == "01 Jul 08:00 EDT"          # naive = UTC; summer is EDT
     s = fmt_col(pd.Series([pd.Timestamp("2026-11-03T21:19Z"), pd.NaT]))
     assert s.iloc[0] == "03 Nov 16:19 EST" and pd.isna(s.iloc[1])
+
+
+def test_quiet_fallback_book_venue_is_not_stale():
+    now = pd.Timestamp("2026-11-09T18:30:00Z")
+    con = _log_db([
+        ("2026-11-08T02:24:00+00:00", "book:kraken:HYPE", 1, 1000, ""),     # stood in once while Coinbase failed
+        ("2026-11-09T18:18:00+00:00", "book:coinbase:HYPE", 1, 2232, ""),   # first choice, working again
+        ("2026-11-08T02:24:00+00:00", "book:kraken:SOL", 1, 900, ""),       # only venue for SOL: still judged
+    ])
+    h = views.source_health(con, now=now).set_index("Source")
+    assert "book:kraken:HYPE" not in h.index
+    assert h.loc["book:coinbase:HYPE", "Status"] == "OK" and h.loc["book:kraken:SOL", "Status"] == "Stale"

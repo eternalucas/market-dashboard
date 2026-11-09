@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import requests
 import yaml
 
 from ..addresses import valid
@@ -137,8 +138,13 @@ def eth_token_transfers(address: str, pages: int = 2) -> pd.DataFrame:
     """Recent ERC-20 transfers in or out of this address, with USD value where
     Blockscout knows the token's price."""
     rows, params = [], {"type": "ERC-20"}
-    for _ in range(pages):
-        d = get_json(f"{BLOCKSCOUT}/addresses/{address}/token-transfers", params)
+    for page in range(pages):
+        try:
+            d = get_json(f"{BLOCKSCOUT}/addresses/{address}/token-transfers", params)
+        except requests.exceptions.HTTPError:
+            if page == 0:
+                raise
+            break                    # a later page failed: keep the newest transfers already fetched
         for it in d.get("items", []):
             tok, tot = it.get("token") or {}, it.get("total") or {}
             dec = int(tot.get("decimals") or tok.get("decimals") or 18)

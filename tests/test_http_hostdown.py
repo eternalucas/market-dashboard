@@ -79,3 +79,20 @@ def test_mempool_state_uses_mirror(monkeypatch):
         return {"fastestFee": 4, "halfHourFee": 3, "hourFee": 2, "economyFee": 1, "minimumFee": 1}
     monkeypatch.setattr(ms, "get_json", fake)
     assert ms.mempool_state()["rec_fastestFee"] == 4.0
+
+
+def test_server_errors_are_retried_without_resting_the_host(monkeypatch):
+    from src.collectors import http
+    calls = []
+
+    class R:
+        def __init__(self, code): self.status_code, self.headers = code, {}
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise http.requests.exceptions.HTTPError(str(self.status_code))
+        def json(self): return {"ok": 1}
+    seq = iter([500, 502, 200])
+    monkeypatch.setattr(http._session, "get", lambda *a, **k: calls.append(1) or R(next(seq)))
+    monkeypatch.setattr(http.time, "sleep", lambda s: None)
+    assert http.get_json("https://eth.blockscout.com/x") == {"ok": 1} and len(calls) == 3
+    assert "eth.blockscout.com" not in http._down

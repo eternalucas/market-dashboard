@@ -58,3 +58,21 @@ def test_btc_sync_reports_a_hole_when_too_busy(monkeypatch):
     monkeypatch.setattr(col.time, "sleep", lambda *_: None)
     rows, complete = col.btc_sync("a1", {"never"}, max_pages=3)
     assert not complete and len(rows) == 75
+
+
+def test_eth_transfers_keep_first_page_when_a_later_page_errors(monkeypatch):
+    import requests
+    from src.collectors import onchain
+    item = {"timestamp": "2026-11-09T17:00:00Z", "transaction_hash": "0x1", "from": {"hash": "a"}, "to": {"hash": "b"},
+            "token": {"symbol": "USDT", "decimals": "6", "exchange_rate": "1"}, "total": {"value": "5000000"}}
+    pages = iter([{"items": [item], "next_page_params": {"index": 1}}])
+
+    def fake(url, params=None):
+        try:
+            return next(pages)
+        except StopIteration:
+            raise requests.exceptions.HTTPError("500 Server Error")
+    monkeypatch.setattr(onchain, "get_json", fake)
+    monkeypatch.setattr(onchain.time, "sleep", lambda s: None)
+    df = onchain.eth_token_transfers("0xabc", pages=2)
+    assert len(df) == 1 and df["usd"].iloc[0] == 5.0

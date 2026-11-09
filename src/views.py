@@ -270,6 +270,15 @@ def source_health(con, now: pd.Timestamp | None = None) -> pd.DataFrame:
     limit = df["source"].map(stale_after)
     marker = df["source"].str.endswith(MARKER_SUFFIXES)
     df = df[~marker | ((now - df["last_attempt"]) <= limit)]
+    # Spot books are tried venue by venue (Coinbase, then Kraken, then Bybit) and the first that
+    # answers wins, so a fallback venue goes quiet once the first one works again: drop it while
+    # another venue for the same asset has succeeded since it was last tried.
+    book = df["source"].str.match(r"^book:[^:]+:[^:]+$")
+    if book.any():
+        asset = df.loc[book, "source"].str.split(":").str[2]
+        newest = df.loc[book].groupby(asset)["last_success"].transform("max")
+        quiet_fallback = df.loc[book, "last_attempt"] < newest
+        df = df.drop(quiet_fallback[quiet_fallback].index)
     limit = limit[df.index]
     failing = df["last_ok"] != 1
     too_old = df["last_success"].isna() | ((now - df["last_success"]) > limit)
