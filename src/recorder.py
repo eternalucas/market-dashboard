@@ -27,7 +27,8 @@ Jobs and cadence (UTC):
 
 Every write is an upsert on the table's primary key, so a repeated or
 overlapping run never duplicates rows. Failures go to fetch_log; successes
-are logged at most once an hour per job so the log stays readable.
+are logged at most once an hour per job so the log stays readable; the first success after
+a failure is always logged, so Data health shows a recovery at once.
 """
 from __future__ import annotations
 
@@ -72,6 +73,7 @@ class Recorder:
             self.last_ok_log[source] = time.time()
 
     def fail(self, source: str, e: Exception) -> None:
+        self.last_ok_log.pop(source, None)       # log the next success at once, so a recovery shows immediately
         try:
             storage.log_fetch(self.con, source, False, 0, f"{type(e).__name__}: {e}")
         except Exception:  # noqa: BLE001 - logging a failure must never raise (e.g. database locked)

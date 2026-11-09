@@ -126,3 +126,16 @@ def test_lock_is_exclusive():
     b = recorder.acquire_lock()
     assert a is not None and b is None
     a.close()
+
+
+def test_first_success_after_a_failure_is_logged_at_once(monkeypatch):
+    from src import recorder, storage
+    logged = []
+    monkeypatch.setattr(storage, "log_fetch", lambda con, src, ok, *a: logged.append(ok))
+    r = recorder.Recorder.__new__(recorder.Recorder)
+    r.last_ok_log, r.con = {}, None
+    r.ok("rec:option_trades:deribit", 5)          # logged
+    r.ok("rec:option_trades:deribit", 5)          # throttled
+    r.fail("rec:option_trades:deribit", ConnectionError("reset by peer"))
+    r.ok("rec:option_trades:deribit", 5)          # recovery: logged straight away
+    assert logged == [True, False, True]
